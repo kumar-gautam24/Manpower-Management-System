@@ -6,20 +6,31 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
+    Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import {
     Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from '@/components/ui/dialog';
 import {
     AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
     AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
+import { Badge } from '@/components/ui/badge';
 import { Building2, Plus, Pencil, Trash2, Users, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { useUser } from '@/hooks/use-user';
 
+const COMMON_CURRENCIES = ['AED', 'USD', 'EUR', 'GBP', 'INR', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR'];
+
 interface CompanyWithCount {
     id: string;
     name: string;
+    currency: string;
+    tradeLicenseNumber?: string | null;
+    establishmentCardNumber?: string | null;
+    mohreCategory?: string | null;
+    regulatoryAuthority?: string | null;
     employeeCount: number;
     createdAt: string;
     updatedAt: string;
@@ -34,6 +45,11 @@ export default function CompaniesPage() {
     const [dialogOpen, setDialogOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [companyName, setCompanyName] = useState('');
+    const [companyCurrency, setCompanyCurrency] = useState('AED');
+    const [tradeLicense, setTradeLicense] = useState('');
+    const [establishmentCard, setEstablishmentCard] = useState('');
+    const [mohreCategory, setMohreCategory] = useState('');
+    const [regulatoryAuthority, setRegulatoryAuthority] = useState('');
     const [saving, setSaving] = useState(false);
 
     const fetchCompanies = useCallback(async () => {
@@ -55,16 +71,29 @@ export default function CompaniesPage() {
 
         try {
             if (editingId) {
-                await api.companies.update(editingId, { name: companyName.trim() });
+                await api.companies.update(editingId, {
+                    name: companyName.trim(),
+                    currency: companyCurrency,
+                    tradeLicenseNumber: tradeLicense || undefined,
+                    establishmentCardNumber: establishmentCard || undefined,
+                    mohreCategory: mohreCategory || undefined,
+                    regulatoryAuthority: regulatoryAuthority || undefined,
+                });
                 toast.success('Company updated');
             } else {
-                await api.companies.create({ name: companyName.trim() });
+                await api.companies.create({
+                    name: companyName.trim(),
+                    currency: companyCurrency,
+                    tradeLicenseNumber: tradeLicense || undefined,
+                    establishmentCardNumber: establishmentCard || undefined,
+                    mohreCategory: mohreCategory || undefined,
+                    regulatoryAuthority: regulatoryAuthority || undefined,
+                });
                 toast.success('Company created');
             }
 
             setDialogOpen(false);
-            setCompanyName('');
-            setEditingId(null);
+            resetDialog();
             fetchCompanies();
         } catch (err) {
             toast.error(err instanceof Error ? err.message : 'Failed to save');
@@ -83,15 +112,29 @@ export default function CompaniesPage() {
         }
     };
 
+    const resetDialog = () => {
+        setCompanyName('');
+        setCompanyCurrency('AED');
+        setTradeLicense('');
+        setEstablishmentCard('');
+        setMohreCategory('');
+        setRegulatoryAuthority('');
+        setEditingId(null);
+    };
+
     const openEdit = (company: CompanyWithCount) => {
         setEditingId(company.id);
         setCompanyName(company.name);
+        setCompanyCurrency(company.currency || 'AED');
+        setTradeLicense(company.tradeLicenseNumber || '');
+        setEstablishmentCard(company.establishmentCardNumber || '');
+        setMohreCategory(company.mohreCategory || '');
+        setRegulatoryAuthority(company.regulatoryAuthority || '');
         setDialogOpen(true);
     };
 
     const openAdd = () => {
-        setEditingId(null);
-        setCompanyName('');
+        resetDialog();
         setDialogOpen(true);
     };
 
@@ -126,7 +169,7 @@ export default function CompaniesPage() {
                         <DialogHeader>
                             <DialogTitle>{editingId ? 'Edit Company' : 'Add Company'}</DialogTitle>
                             <DialogDescription>
-                                {editingId ? 'Update the company name.' : 'Enter the name for the new company.'}
+                                {editingId ? 'Update the company details.' : 'Enter the details for the new company.'}
                             </DialogDescription>
                         </DialogHeader>
                         <div className="space-y-4 py-4">
@@ -140,6 +183,74 @@ export default function CompaniesPage() {
                                     autoFocus
                                     onKeyDown={(e) => e.key === 'Enter' && handleSave()}
                                 />
+                            </div>
+                            <div className="space-y-2">
+                                <Label>Currency</Label>
+                                <Select value={companyCurrency} onValueChange={setCompanyCurrency}>
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Select currency..." />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {COMMON_CURRENCIES.map((c) => (
+                                            <SelectItem key={c} value={c}>{c}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            {/* Regulatory Fields */}
+                            <div className="border-t pt-4 mt-2">
+                                <p className="text-sm font-medium text-muted-foreground mb-3">Regulatory Information (Optional)</p>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="trade-license" className="text-xs">Trade License No.</Label>
+                                        <Input
+                                            id="trade-license"
+                                            placeholder="e.g. 12345"
+                                            value={tradeLicense}
+                                            onChange={(e) => setTradeLicense(e.target.value)}
+                                        />
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="establishment-card" className="text-xs">Establishment Card No.</Label>
+                                        <Input
+                                            id="establishment-card"
+                                            placeholder="e.g. EC-67890"
+                                            value={establishmentCard}
+                                            onChange={(e) => setEstablishmentCard(e.target.value)}
+                                        />
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="mohre-category" className="text-xs">MoHRE Category</Label>
+                                        <Select value={mohreCategory || 'none'} onValueChange={(v) => setMohreCategory(v === 'none' ? '' : v)}>
+                                            <SelectTrigger id="mohre-category">
+                                                <SelectValue placeholder="Select..." />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="none">Not set</SelectItem>
+                                                <SelectItem value="1">Category 1</SelectItem>
+                                                <SelectItem value="2">Category 2</SelectItem>
+                                                <SelectItem value="3">Category 3</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="regulatory-authority" className="text-xs">Regulatory Authority</Label>
+                                        <Select value={regulatoryAuthority || 'none'} onValueChange={(v) => setRegulatoryAuthority(v === 'none' ? '' : v)}>
+                                            <SelectTrigger id="regulatory-authority">
+                                                <SelectValue placeholder="Select..." />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="none">Not set</SelectItem>
+                                                <SelectItem value="MOHRE">MOHRE</SelectItem>
+                                                <SelectItem value="JAFZA">JAFZA</SelectItem>
+                                                <SelectItem value="DMCC">DMCC</SelectItem>
+                                                <SelectItem value="DIFC">DIFC</SelectItem>
+                                                <SelectItem value="DAFZA">DAFZA</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         <DialogFooter>
@@ -162,7 +273,10 @@ export default function CompaniesPage() {
                                 <div className="w-10 h-10 rounded-lg bg-blue-100 dark:bg-blue-950/40 flex items-center justify-center">
                                     <Building2 className="h-5 w-5 text-blue-600 dark:text-blue-400" />
                                 </div>
-                                <CardTitle className="text-base font-semibold">{company.name}</CardTitle>
+                                <div>
+                                    <CardTitle className="text-base font-semibold">{company.name}</CardTitle>
+                                    <Badge variant="outline" className="mt-1 text-xs">{company.currency || 'AED'}</Badge>
+                                </div>
                             </div>
                         </CardHeader>
                         <CardContent>

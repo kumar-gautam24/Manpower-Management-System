@@ -2,12 +2,17 @@ import type {
     Employee,
     EmployeeWithCompany,
     Document,
+    DocumentWithCompliance,
     DashboardMetrics,
     ExpiryAlert,
     Company,
     CompanySummary,
+    ComplianceStats,
+    DependencyAlert,
     CreateEmployeeRequest,
+    ExitEmployeeRequest,
     CreateDocumentRequest,
+    CreateCompanyRequest,
     SalaryRecordWithEmployee,
     SalarySummary,
     SalaryRecord,
@@ -137,17 +142,19 @@ export const api = {
             fetcher<{ data: ExpiryAlert[]; total: number }>('/api/dashboard/expiring'),
         getCompanySummary: () =>
             fetcher<{ data: CompanySummary[] }>('/api/dashboard/company-summary'),
+        getComplianceStats: () =>
+            fetcher<ComplianceStats>('/api/dashboard/compliance'),
     },
 
     // ── Companies ─────────────────────────────────────────────
     companies: {
         list: () => fetcher<{ data: Company[] }>('/api/companies'),
-        create: (data: { name: string }) =>
+        create: (data: CreateCompanyRequest) =>
             fetcher<{ data: Company; message: string }>('/api/companies', {
                 method: 'POST',
                 body: JSON.stringify(data),
             }),
-        update: (id: string, data: { name: string }) =>
+        update: (id: string, data: CreateCompanyRequest) =>
             fetcher<{ data: Company; message: string }>(`/api/companies/${id}`, {
                 method: 'PUT',
                 body: JSON.stringify(data),
@@ -175,7 +182,7 @@ export const api = {
             );
         },
         get: (id: string) =>
-            fetcher<{ data: EmployeeWithCompany; documents: Document[] }>(
+            fetcher<{ data: EmployeeWithCompany }>(
                 `/api/employees/${id}`
             ),
         create: (data: CreateEmployeeRequest) =>
@@ -192,22 +199,38 @@ export const api = {
             fetcher<{ message: string }>(`/api/employees/${id}`, {
                 method: 'DELETE',
             }),
+        exit: (id: string, data: ExitEmployeeRequest) =>
+            fetcher<{ data: Employee; message: string }>(`/api/employees/${id}/exit`, {
+                method: 'PATCH',
+                body: JSON.stringify(data),
+            }),
+        batchDelete: (ids: string[]) =>
+            fetcher<{ message: string; deleted: number }>('/api/employees/batch-delete', {
+                method: 'POST',
+                body: JSON.stringify({ ids }),
+            }),
+        getDependencyAlerts: (id: string) =>
+            fetcher<{ data: DependencyAlert[] }>(`/api/employees/${id}/dependency-alerts`),
         export: () => downloadFile('/api/employees/export', 'employees.csv'),
     },
 
     // ── Documents ─────────────────────────────────────────────
     documents: {
         listByEmployee: (employeeId: string) =>
-            fetcher<{ data: Document[] }>(`/api/employees/${employeeId}/documents`),
+            fetcher<{ data: DocumentWithCompliance[]; completion: { total: number; complete: number } }>(
+                `/api/employees/${employeeId}/documents`
+            ),
         get: (id: string) =>
-            fetcher<{ data: Document }>(`/api/documents/${id}`),
+            fetcher<{ data: { document: DocumentWithCompliance; employeeName: string; companyName: string } }>(
+                `/api/documents/${id}`
+            ),
         create: (employeeId: string, data: CreateDocumentRequest) =>
-            fetcher<{ data: Document; message: string }>(
+            fetcher<{ data: DocumentWithCompliance; message: string }>(
                 `/api/employees/${employeeId}/documents`,
                 { method: 'POST', body: JSON.stringify(data) }
             ),
         update: (id: string, data: Partial<CreateDocumentRequest>) =>
-            fetcher<{ data: Document; message: string }>(`/api/documents/${id}`, {
+            fetcher<{ data: DocumentWithCompliance; message: string }>(`/api/documents/${id}`, {
                 method: 'PUT',
                 body: JSON.stringify(data),
             }),
@@ -215,13 +238,26 @@ export const api = {
             fetcher<{ message: string }>(`/api/documents/${id}`, {
                 method: 'DELETE',
             }),
+        batchDelete: (ids: string[]) =>
+            fetcher<{ message: string; deleted: number }>('/api/documents/batch-delete', {
+                method: 'POST',
+                body: JSON.stringify({ ids }),
+            }),
         togglePrimary: (id: string) =>
             fetcher<{ message: string }>(`/api/documents/${id}/primary`, {
                 method: 'PATCH',
             }),
-
-        renew: (id: string, data: { expiryDate: string; fileUrl?: string; fileName?: string; fileSize?: number; fileType?: string }) =>
-            fetcher<{ data: Document; message: string }>(`/api/documents/${id}/renew`, {
+        renew: (id: string, data: {
+            documentNumber?: string;
+            issueDate?: string;
+            expiryDate: string;
+            metadata?: Record<string, unknown>;
+            fileUrl?: string;
+            fileName?: string;
+            fileSize?: number;
+            fileType?: string;
+        }) =>
+            fetcher<{ data: DocumentWithCompliance; message: string }>(`/api/documents/${id}/renew`, {
                 method: 'POST',
                 body: JSON.stringify(data),
             }),

@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/cors"
 
 	"manpower-backend/internal/config"
+	"manpower-backend/internal/cron"
 	"manpower-backend/internal/database"
 	"manpower-backend/internal/handlers"
 	"manpower-backend/internal/middleware"
@@ -63,6 +64,9 @@ func main() {
 	activityHandler := handlers.NewActivityHandler(db)
 	notificationHandler := handlers.NewNotificationHandler(db)
 
+	// Start background cron jobs
+	cron.StartNotifier(db)
+
 	// 6. Public routes (no authentication required)
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Manpower Management System API"))
@@ -92,6 +96,7 @@ func main() {
 		r.Get("/api/dashboard/metrics", dashboardHandler.GetMetrics)
 		r.Get("/api/dashboard/expiring", dashboardHandler.GetExpiryAlerts)
 		r.Get("/api/dashboard/company-summary", dashboardHandler.GetCompanySummary)
+		r.Get("/api/dashboard/compliance", dashboardHandler.GetComplianceStats)
 
 		// Notifications (user-scoped, all authenticated users)
 		r.Get("/api/notifications", notificationHandler.List)
@@ -111,6 +116,7 @@ func main() {
 		r.Route("/api/employees/{id}", func(r chi.Router) {
 			r.Get("/", employeeHandler.GetByID)
 			r.Get("/documents", documentHandler.ListByEmployee)
+			r.Get("/dependency-alerts", dashboardHandler.GetDependencyAlerts)
 			r.Get("/salary", salaryHandler.ListByEmployee)
 		})
 
@@ -133,9 +139,12 @@ func main() {
 			r.Post("/api/employees", employeeHandler.Create)
 			r.Put("/api/employees/{id}", employeeHandler.Update)
 			r.Delete("/api/employees/{id}", employeeHandler.Delete)
+			r.Post("/api/employees/batch-delete", employeeHandler.BatchDelete)
+			r.Patch("/api/employees/{id}/exit", employeeHandler.Exit)
 
 			// Document write operations (nested under employee for create)
 			r.Post("/api/employees/{employeeId}/documents", documentHandler.Create)
+			r.Post("/api/documents/batch-delete", documentHandler.BatchDelete)
 			r.Route("/api/documents/{id}", func(r chi.Router) {
 				r.Put("/", documentHandler.Update)
 				r.Delete("/", documentHandler.Delete)

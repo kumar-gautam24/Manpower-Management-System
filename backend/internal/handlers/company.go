@@ -24,6 +24,8 @@ func NewCompanyHandler(db database.Service) *CompanyHandler {
 	return &CompanyHandler{db: db}
 }
 
+// ── List ───────────────────────────────────────────────────────
+
 // List returns all companies, ordered alphabetically.
 func (h *CompanyHandler) List(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -31,13 +33,18 @@ func (h *CompanyHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	pool := h.db.GetPool()
 
-	// Include employee count per company for the UI cards
 	rows, err := pool.Query(ctx, `
-		SELECT c.id, c.name, COALESCE(c.currency, 'AED'), c.created_at::text, c.updated_at::text,
+		SELECT c.id, c.name, COALESCE(c.currency, 'AED'),
+			c.trade_license_number, c.establishment_card_number,
+			c.mohre_category, c.regulatory_authority,
+			c.created_at::text, c.updated_at::text,
 			COUNT(e.id) AS employee_count
 		FROM companies c
 		LEFT JOIN employees e ON e.company_id = c.id
-		GROUP BY c.id, c.name, c.currency, c.created_at, c.updated_at
+		GROUP BY c.id, c.name, c.currency,
+			c.trade_license_number, c.establishment_card_number,
+			c.mohre_category, c.regulatory_authority,
+			c.created_at, c.updated_at
 		ORDER BY c.name ASC
 	`)
 	if err != nil {
@@ -55,7 +62,13 @@ func (h *CompanyHandler) List(w http.ResponseWriter, r *http.Request) {
 	companies := []CompanyWithCount{}
 	for rows.Next() {
 		var c CompanyWithCount
-		if err := rows.Scan(&c.ID, &c.Name, &c.Currency, &c.CreatedAt, &c.UpdatedAt, &c.EmployeeCount); err != nil {
+		if err := rows.Scan(
+			&c.ID, &c.Name, &c.Currency,
+			&c.TradeLicenseNumber, &c.EstablishmentCardNumber,
+			&c.MohreCategory, &c.RegulatoryAuthority,
+			&c.CreatedAt, &c.UpdatedAt,
+			&c.EmployeeCount,
+		); err != nil {
 			log.Printf("Error scanning company: %v", err)
 			continue
 		}
@@ -67,12 +80,21 @@ func (h *CompanyHandler) List(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ── Create ─────────────────────────────────────────────────────
+
+// createCompanyRequest defines the accepted fields for company creation/update.
+type createCompanyRequest struct {
+	Name                    string  `json:"name"`
+	Currency                string  `json:"currency"`
+	TradeLicenseNumber      *string `json:"tradeLicenseNumber,omitempty"`
+	EstablishmentCardNumber *string `json:"establishmentCardNumber,omitempty"`
+	MohreCategory           *string `json:"mohreCategory,omitempty"`
+	RegulatoryAuthority     *string `json:"regulatoryAuthority,omitempty"`
+}
+
 // Create adds a new company.
 func (h *CompanyHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name     string `json:"name"`
-		Currency string `json:"currency"`
-	}
+	var req createCompanyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		JSONError(w, http.StatusBadRequest, "Invalid JSON body")
 		return
@@ -82,7 +104,6 @@ func (h *CompanyHandler) Create(w http.ResponseWriter, r *http.Request) {
 		JSONError(w, http.StatusUnprocessableEntity, "Company name is required")
 		return
 	}
-
 	if req.Currency == "" {
 		req.Currency = "AED"
 	}
@@ -97,11 +118,25 @@ func (h *CompanyHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	var company models.Company
 	err := pool.QueryRow(ctx, `
-		INSERT INTO companies (name, currency, user_id)
-		VALUES ($1, $2, $3)
-		RETURNING id, name, currency, created_at::text, updated_at::text
+		INSERT INTO companies (
+			name, currency, user_id,
+			trade_license_number, establishment_card_number,
+			mohre_category, regulatory_authority
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, name, currency,
+			trade_license_number, establishment_card_number,
+			mohre_category, regulatory_authority,
+			created_at::text, updated_at::text
 	`, req.Name, req.Currency, nilIfEmptyStr(userID),
-	).Scan(&company.ID, &company.Name, &company.Currency, &company.CreatedAt, &company.UpdatedAt)
+		req.TradeLicenseNumber, req.EstablishmentCardNumber,
+		req.MohreCategory, req.RegulatoryAuthority,
+	).Scan(
+		&company.ID, &company.Name, &company.Currency,
+		&company.TradeLicenseNumber, &company.EstablishmentCardNumber,
+		&company.MohreCategory, &company.RegulatoryAuthority,
+		&company.CreatedAt, &company.UpdatedAt,
+	)
 
 	if err != nil {
 		if isDuplicateKeyError(err) {
@@ -119,14 +154,13 @@ func (h *CompanyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Update modifies a company's name.
+// ── Update ─────────────────────────────────────────────────────
+
+// Update modifies a company's details.
 func (h *CompanyHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	var req struct {
-		Name     string `json:"name"`
-		Currency string `json:"currency"`
-	}
+	var req createCompanyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		JSONError(w, http.StatusBadRequest, "Invalid JSON body")
 		return
@@ -136,7 +170,6 @@ func (h *CompanyHandler) Update(w http.ResponseWriter, r *http.Request) {
 		JSONError(w, http.StatusUnprocessableEntity, "Company name is required")
 		return
 	}
-
 	if req.Currency == "" {
 		req.Currency = "AED"
 	}
@@ -148,11 +181,25 @@ func (h *CompanyHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	var company models.Company
 	err := pool.QueryRow(ctx, `
-		UPDATE companies SET name = $1, currency = $2, updated_at = NOW()
-		WHERE id = $3
-		RETURNING id, name, currency, created_at::text, updated_at::text
-	`, req.Name, req.Currency, id,
-	).Scan(&company.ID, &company.Name, &company.Currency, &company.CreatedAt, &company.UpdatedAt)
+		UPDATE companies SET
+			name = $1, currency = $2, updated_at = NOW(),
+			trade_license_number = $3, establishment_card_number = $4,
+			mohre_category = $5, regulatory_authority = $6
+		WHERE id = $7
+		RETURNING id, name, currency,
+			trade_license_number, establishment_card_number,
+			mohre_category, regulatory_authority,
+			created_at::text, updated_at::text
+	`, req.Name, req.Currency,
+		req.TradeLicenseNumber, req.EstablishmentCardNumber,
+		req.MohreCategory, req.RegulatoryAuthority,
+		id,
+	).Scan(
+		&company.ID, &company.Name, &company.Currency,
+		&company.TradeLicenseNumber, &company.EstablishmentCardNumber,
+		&company.MohreCategory, &company.RegulatoryAuthority,
+		&company.CreatedAt, &company.UpdatedAt,
+	)
 
 	if err != nil {
 		if isDuplicateKeyError(err) {
@@ -168,6 +215,8 @@ func (h *CompanyHandler) Update(w http.ResponseWriter, r *http.Request) {
 		"message": "Company updated successfully",
 	})
 }
+
+// ── Delete ─────────────────────────────────────────────────────
 
 // Delete removes a company and cascades to its employees and documents.
 func (h *CompanyHandler) Delete(w http.ResponseWriter, r *http.Request) {
@@ -194,6 +243,8 @@ func (h *CompanyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		"message": "Company deleted successfully",
 	})
 }
+
+// ── Helpers ────────────────────────────────────────────────────
 
 // nilIfEmptyStr returns nil for empty strings (for nullable DB columns)
 func nilIfEmptyStr(s string) interface{} {

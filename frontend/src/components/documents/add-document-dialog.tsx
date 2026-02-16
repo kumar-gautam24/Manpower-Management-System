@@ -10,12 +10,35 @@ import { Label } from '@/components/ui/label';
 import { Loader2, Upload, FileText, Image, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
-import type { Document } from '@/types';
+import type { Document, DocumentWithCompliance } from '@/types';
 
 const DOCUMENT_TYPES = [
     'Visa', 'Passport', 'Emirates ID', 'Labor Card',
     'Medical Insurance', 'Work Permit', 'Trade License', 'Other',
 ];
+
+/** Map snake_case backend type → display name for chip matching */
+const DOC_TYPE_DISPLAY: Record<string, string> = {
+    passport: 'Passport',
+    visa: 'Visa',
+    emirates_id: 'Emirates ID',
+    work_permit: 'Work Permit',
+    health_insurance: 'Medical Insurance',
+    iloe_insurance: 'Other',
+    medical_fitness: 'Other',
+    labor_card: 'Labor Card',
+};
+
+/** Reverse map: display name → snake_case */
+const DOC_TYPE_TO_SNAKE: Record<string, string> = {
+    Passport: 'passport',
+    Visa: 'visa',
+    'Emirates ID': 'emirates_id',
+    'Work Permit': 'work_permit',
+    'Medical Insurance': 'health_insurance',
+    'Labor Card': 'labor_card',
+    'Trade License': 'trade_license',
+};
 
 interface AddDocumentDialogProps {
     employeeId: string;
@@ -82,12 +105,12 @@ export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess }:
 
             // Create document record
             await api.documents.create(employeeId, {
-                documentType: selectedType,
+                documentType: DOC_TYPE_TO_SNAKE[selectedType] || selectedType,
                 expiryDate: expiryDate || undefined,
-                fileUrl: fileData.fileUrl || `placeholder://${selectedType.toLowerCase().replace(/\s/g, '-')}`,
-                fileName: fileData.fileName || `${selectedType}.pdf`,
-                fileSize: fileData.fileSize || 0,
-                fileType: fileData.fileType || 'application/pdf',
+                fileUrl: fileData.fileUrl,
+                fileName: fileData.fileName,
+                fileSize: fileData.fileSize,
+                fileType: fileData.fileType,
             });
 
             toast.success('Document added successfully');
@@ -214,16 +237,18 @@ export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess }:
 // ── Edit Document Dialog ──────────────────────────────────────
 
 interface EditDocumentDialogProps {
-    document: Document;
+    document: Document | DocumentWithCompliance;
     open: boolean;
     onOpenChange: (open: boolean) => void;
     onSuccess: () => void;
 }
 
 export function EditDocumentDialog({ document, open, onOpenChange, onSuccess }: EditDocumentDialogProps) {
-    const [documentType, setDocumentType] = useState(document.documentType);
+    const displayType = DOC_TYPE_DISPLAY[document.documentType] || document.documentType;
+    const [documentType, setDocumentType] = useState(displayType);
     const [expiryDate, setExpiryDate] = useState(document.expiryDate || '');
     const [file, setFile] = useState<File | null>(null);
+    const isMandatory = 'isMandatory' in document && document.isMandatory;
     const [saving, setSaving] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -245,7 +270,7 @@ export function EditDocumentDialog({ document, open, onOpenChange, onSuccess }: 
             }
 
             await api.documents.update(document.id, {
-                documentType,
+                documentType: DOC_TYPE_TO_SNAKE[documentType] || documentType,
                 expiryDate: expiryDate || undefined,
                 ...fileData,
             });
@@ -272,21 +297,27 @@ export function EditDocumentDialog({ document, open, onOpenChange, onSuccess }: 
                     {/* Document Type */}
                     <div className="space-y-2">
                         <Label>Document Type</Label>
-                        <div className="flex flex-wrap gap-2">
-                            {DOCUMENT_TYPES.filter(t => t !== 'Other').map((type) => (
-                                <button
-                                    key={type}
-                                    onClick={() => setDocumentType(type)}
-                                    className={`px-3 py-1.5 rounded-full text-sm font-medium border transition-colors
-                    ${documentType === type
-                                            ? 'bg-blue-600 text-white border-blue-600'
-                                            : 'bg-background text-foreground border-border hover:border-blue-300 dark:hover:border-blue-700'
-                                        }`}
-                                >
-                                    {type}
-                                </button>
-                            ))}
-                        </div>
+                        {isMandatory ? (
+                            <p className="text-sm font-medium text-foreground px-3 py-1.5 rounded-full bg-muted border border-border inline-block">
+                                {displayType}
+                            </p>
+                        ) : (
+                            <div className="flex flex-wrap gap-2">
+                                {DOCUMENT_TYPES.filter(t => t !== 'Other').map((type) => (
+                                    <button
+                                        key={type}
+                                        onClick={() => setDocumentType(type)}
+                                        className={`px-3 py-1.5 rounded-full text-sm font-medium border transition-colors
+                        ${documentType === type
+                                                ? 'bg-blue-600 text-white border-blue-600'
+                                                : 'bg-background text-foreground border-border hover:border-blue-300 dark:hover:border-blue-700'
+                                            }`}
+                                    >
+                                        {type}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
                     </div>
 
                     {/* Expiry Date */}

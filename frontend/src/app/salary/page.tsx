@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
 import type { SalaryRecordWithEmployee, SalarySummary, Company } from '@/types';
+import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import { useUser } from '@/hooks/use-user';
@@ -56,11 +57,11 @@ export default function SalaryPage() {
         setGenerating(true);
         try {
             const res = await api.salary.generate(month, year);
-            alert(`${res.inserted} salary records generated`);
+            toast.success(`${res.inserted} salary records generated`);
             fetchData();
         } catch (e) {
             console.error(e);
-            alert('Failed to generate salary records');
+            toast.error('Failed to generate salary records');
         } finally {
             setGenerating(false);
         }

@@ -230,7 +230,7 @@ export default function AddEmployeePage() {
                                 </div>
 
                                 <div className="space-y-2">
-                                    <Label htmlFor="salary">Salary (AED/month)</Label>
+                                    <Label htmlFor="salary">Salary ({companies.find(c => c.id === form.companyId)?.currency || 'AED'}/month)</Label>
                                     <Input id="salary" type="number" step="0.01" placeholder="e.g. 3500" value={form.salary ?? ''}
                                         onChange={(e) => setForm({ ...form, salary: e.target.value ? parseFloat(e.target.value) : undefined })} />
                                 </div>

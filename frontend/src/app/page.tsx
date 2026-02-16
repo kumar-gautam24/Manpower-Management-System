@@ -7,9 +7,10 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
   Users, FileText, AlertTriangle, XCircle, Building2, Loader2, CheckCircle, TrendingUp,
+  DollarSign,
 } from 'lucide-react';
 import { api } from '@/lib/api';
-import type { DashboardMetrics, ExpiryAlert, CompanySummary } from '@/types';
+import type { DashboardMetrics, ExpiryAlert, CompanySummary, ComplianceStats } from '@/types';
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts';
@@ -26,20 +27,23 @@ export default function DashboardPage() {
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const [alerts, setAlerts] = useState<ExpiryAlert[]>([]);
   const [companies, setCompanies] = useState<CompanySummary[]>([]);
+  const [compliance, setCompliance] = useState<ComplianceStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const [metricsRes, alertsRes, companiesRes] = await Promise.all([
+      const [metricsRes, alertsRes, companiesRes, complianceRes] = await Promise.all([
         api.dashboard.getMetrics(),
         api.dashboard.getExpiryAlerts().catch(() => ({ data: [], total: 0 })),
         api.dashboard.getCompanySummary().catch(() => ({ data: [] })),
+        api.dashboard.getComplianceStats().catch(() => null),
       ]);
       setMetrics(metricsRes);
       setAlerts(alertsRes.data || []);
       setCompanies(companiesRes.data || []);
+      if (complianceRes) setCompliance(complianceRes);
       setError(null);
     } catch {
       setError('Failed to load dashboard. Make sure the backend is running.');
@@ -104,12 +108,22 @@ export default function DashboardPage() {
       </div>
 
       {/* Metric Cards — clickable for detail */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         {[
           { label: 'Total Employees', value: metrics.totalEmployees, sub: 'Active workforce', icon: Users, border: 'border-l-blue-500', iconColor: 'text-blue-500', valueColor: '', href: '/employees' },
           { label: 'Active Documents', value: metrics.activeDocuments, sub: 'Valid documents', icon: FileText, border: 'border-l-green-500', iconColor: 'text-green-500', valueColor: '', href: '/employees?status=active' },
           { label: 'Expiring Soon', value: metrics.expiringSoon, sub: 'Within 30 days', icon: AlertTriangle, border: 'border-l-yellow-500', iconColor: 'text-yellow-500', valueColor: 'text-yellow-700 dark:text-yellow-400', href: '/employees?status=expiring' },
           { label: 'Expired', value: metrics.expired, sub: 'Requires renewal', icon: XCircle, border: 'border-l-red-500', iconColor: 'text-red-500', valueColor: 'text-red-700 dark:text-red-400', href: '/employees?status=expired' },
+          {
+            label: 'Fine Exposure',
+            value: compliance ? `${compliance.totalAccumulated.toLocaleString('en', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : '0',
+            sub: compliance ? `${compliance.totalDailyFine.toFixed(0)} AED/day` : 'No fines',
+            icon: DollarSign,
+            border: 'border-l-purple-500',
+            iconColor: 'text-purple-500',
+            valueColor: 'text-purple-700 dark:text-purple-400',
+            href: '/employees?status=expired',
+          },
         ].map((card) => (
           <Link key={card.label} href={card.href}>
             <Card className={`border-l-4 ${card.border} hover:shadow-lg hover:scale-[1.02] transition-all cursor-pointer border-border/60`}>
@@ -257,12 +271,22 @@ export default function DashboardPage() {
                         <span className="hidden sm:inline text-xs">Expires: {alert.expiryDate}</span>
                       </div>
                     </div>
-                    <div className="text-center ml-4">
-                      <div className={`text-2xl font-bold ${alert.daysLeft < 0 ? 'text-red-600' : alert.daysLeft <= 7 ? 'text-orange-600' : 'text-yellow-600'}`}>
-                        {Math.abs(alert.daysLeft)}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {alert.daysLeft < 0 ? 'days late' : 'days left'}
+                    <div className="flex items-center gap-4 ml-4">
+                      {alert.estimatedFine > 0 && (
+                        <div className="text-center">
+                          <div className="text-sm font-bold text-purple-600 dark:text-purple-400">
+                            {alert.estimatedFine.toLocaleString('en', { maximumFractionDigits: 0 })} AED
+                          </div>
+                          <div className="text-xs text-muted-foreground">est. fine</div>
+                        </div>
+                      )}
+                      <div className="text-center">
+                        <div className={`text-2xl font-bold ${alert.daysLeft < 0 ? 'text-red-600' : alert.daysLeft <= 7 ? 'text-orange-600' : 'text-yellow-600'}`}>
+                          {Math.abs(alert.daysLeft)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {alert.daysLeft < 0 ? 'days late' : 'days left'}
+                        </div>
                       </div>
                     </div>
                   </div>

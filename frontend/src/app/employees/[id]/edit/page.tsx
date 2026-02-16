@@ -40,6 +40,14 @@ export default function EditEmployeePage() {
         trade: '',
         mobile: '',
         joiningDate: '',
+        gender: '',
+        dateOfBirth: '',
+        nationality: '',
+        passportNumber: '',
+        nativeLocation: '',
+        currentLocation: '',
+        salary: undefined as number | undefined,
+        status: 'active',
     });
     const [customTrade, setCustomTrade] = useState(false);
     const [errors, setErrors] = useState<Record<string, string>>({});
@@ -59,8 +67,15 @@ export default function EditEmployeePage() {
                 trade: emp.trade,
                 mobile: emp.mobile,
                 joiningDate: emp.joiningDate,
+                gender: emp.gender || '',
+                dateOfBirth: emp.dateOfBirth || '',
+                nationality: emp.nationality || '',
+                passportNumber: emp.passportNumber || '',
+                nativeLocation: emp.nativeLocation || '',
+                currentLocation: emp.currentLocation || '',
+                salary: emp.salary ?? undefined,
+                status: emp.status || 'active',
             });
-            // Check if trade is a custom value
             if (!COMMON_TRADES.includes(emp.trade)) {
                 setCustomTrade(true);
             }
@@ -75,6 +90,9 @@ export default function EditEmployeePage() {
     useEffect(() => {
         fetchData();
     }, [fetchData]);
+
+    /** Get currency label for the salary field based on selected company */
+    const selectedCurrency = companies.find(c => c.id === form.companyId)?.currency || 'AED';
 
     const validate = (): boolean => {
         const errs: Record<string, string> = {};
@@ -124,12 +142,14 @@ export default function EditEmployeePage() {
                 </CardHeader>
                 <CardContent>
                     <form onSubmit={handleSubmit} className="space-y-5">
+                        {/* Name */}
                         <div className="space-y-2">
                             <Label htmlFor="name">Full Name *</Label>
                             <Input id="name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
                             {errors.name && <p className="text-sm text-red-500">{errors.name}</p>}
                         </div>
 
+                        {/* Trade */}
                         <div className="space-y-2">
                             <Label>Trade / Job Role *</Label>
                             {customTrade ? (
@@ -151,6 +171,7 @@ export default function EditEmployeePage() {
                             {errors.trade && <p className="text-sm text-red-500">{errors.trade}</p>}
                         </div>
 
+                        {/* Company */}
                         <div className="space-y-2">
                             <Label>Company *</Label>
                             <Select value={form.companyId} onValueChange={(v) => setForm({ ...form, companyId: v })}>
@@ -162,18 +183,87 @@ export default function EditEmployeePage() {
                             {errors.companyId && <p className="text-sm text-red-500">{errors.companyId}</p>}
                         </div>
 
+                        {/* Mobile */}
                         <div className="space-y-2">
                             <Label htmlFor="mobile">Mobile *</Label>
                             <Input id="mobile" value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
                             {errors.mobile && <p className="text-sm text-red-500">{errors.mobile}</p>}
                         </div>
 
+                        {/* Joining Date */}
                         <div className="space-y-2">
                             <Label htmlFor="joiningDate">Joining Date *</Label>
                             <Input id="joiningDate" type="date" value={form.joiningDate} max={new Date().toISOString().split('T')[0]} onChange={(e) => setForm({ ...form, joiningDate: e.target.value })} />
                             {errors.joiningDate && <p className="text-sm text-red-500">{errors.joiningDate}</p>}
                         </div>
 
+                        {/* ── Optional Profile Details ────────────────── */}
+                        <div className="border-t border-border pt-5 mt-4">
+                            <p className="text-sm font-medium text-foreground mb-4">Optional Profile Details</p>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <Label>Gender</Label>
+                                    <Select value={form.gender || ''} onValueChange={(v) => setForm({ ...form, gender: v })}>
+                                        <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="male">Male</SelectItem>
+                                            <SelectItem value="female">Female</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="dob">Date of Birth</Label>
+                                    <Input id="dob" type="date" value={form.dateOfBirth || ''}
+                                        onChange={(e) => setForm({ ...form, dateOfBirth: e.target.value })} />
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="nationality">Nationality</Label>
+                                    <Input id="nationality" placeholder="e.g. Indian" value={form.nationality || ''}
+                                        onChange={(e) => setForm({ ...form, nationality: e.target.value })} />
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="passport">Passport Number</Label>
+                                    <Input id="passport" placeholder="e.g. A12345678" value={form.passportNumber || ''}
+                                        onChange={(e) => setForm({ ...form, passportNumber: e.target.value })} />
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="nativeLoc">Native Location</Label>
+                                    <Input id="nativeLoc" placeholder="e.g. Kerala, India" value={form.nativeLocation || ''}
+                                        onChange={(e) => setForm({ ...form, nativeLocation: e.target.value })} />
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="currentLoc">Current Location</Label>
+                                    <Input id="currentLoc" placeholder="e.g. Dubai, UAE" value={form.currentLocation || ''}
+                                        onChange={(e) => setForm({ ...form, currentLocation: e.target.value })} />
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="salary">Salary ({selectedCurrency}/month)</Label>
+                                    <Input id="salary" type="number" step="0.01" placeholder="e.g. 3500" value={form.salary ?? ''}
+                                        onChange={(e) => setForm({ ...form, salary: e.target.value ? parseFloat(e.target.value) : undefined })} />
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label>Status</Label>
+                                    <Select value={form.status || 'active'} onValueChange={(v) => setForm({ ...form, status: v })}>
+                                        <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="active">Active</SelectItem>
+                                            <SelectItem value="inactive">Inactive</SelectItem>
+                                            <SelectItem value="on_leave">On Leave</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Submit */}
                         <div className="flex gap-3 pt-2">
                             <Button type="submit" disabled={submitting} className="flex-1">
                                 {submitting ? (<><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving...</>) : (<><Save className="h-4 w-4 mr-2" /> Save Changes</>)}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"manpower-backend/internal/compliance"
 	"manpower-backend/internal/ctxkeys"
 	"manpower-backend/internal/database"
 	"manpower-backend/internal/models"
@@ -29,12 +30,24 @@ func NewEmployeeHandler(db database.Service) *EmployeeHandler {
 }
 
 // ── Columns ────────────────────────────────────────────────────
-// Central list so Create/GetByID/List all stay in sync.
+// Central column lists keep Create/GetByID/List all in sync.
+// Aliased version (for SELECT with FROM clause):
 const employeeCols = `e.id, e.company_id, e.name, e.trade, e.mobile,
 	e.joining_date::text, e.photo_url,
 	e.gender, e.date_of_birth::text, e.nationality, e.passport_number,
 	e.native_location, e.current_location, e.salary, e.status,
+	e.exit_type, e.exit_date::text, e.exit_notes,
 	e.created_at, e.updated_at`
+
+// Unaliased version (for INSERT/UPDATE RETURNING):
+const employeeRetCols = `id, company_id, name, trade, mobile,
+	joining_date::text, photo_url,
+	gender, date_of_birth::text, nationality, passport_number,
+	native_location, current_location, salary, status,
+	exit_type, exit_date::text, exit_notes,
+	created_at, updated_at`
+
+// ── Scan Helpers ───────────────────────────────────────────────
 
 func scanEmployee(scanner interface {
 	Scan(dest ...interface{}) error
@@ -44,6 +57,7 @@ func scanEmployee(scanner interface {
 		&emp.JoiningDate, &emp.PhotoURL,
 		&emp.Gender, &emp.DateOfBirth, &emp.Nationality, &emp.PassportNumber,
 		&emp.NativeLocation, &emp.CurrentLocation, &emp.Salary, &emp.Status,
+		&emp.ExitType, &emp.ExitDate, &emp.ExitNotes,
 		&emp.CreatedAt, &emp.UpdatedAt,
 	)
 }
@@ -56,15 +70,20 @@ func scanEmployeeWithCompany(scanner interface {
 		&emp.JoiningDate, &emp.PhotoURL,
 		&emp.Gender, &emp.DateOfBirth, &emp.Nationality, &emp.PassportNumber,
 		&emp.NativeLocation, &emp.CurrentLocation, &emp.Salary, &emp.Status,
+		&emp.ExitType, &emp.ExitDate, &emp.ExitNotes,
 		&emp.CreatedAt, &emp.UpdatedAt,
-		&emp.CompanyName, &emp.DocStatus,
-		&emp.ExpiryDaysLeft, &emp.PrimaryDocType,
+		&emp.CompanyName, &emp.CompanyCurrency,
+		&emp.ComplianceStatus, &emp.NearestExpiryDays,
+		&emp.DocsComplete, &emp.DocsTotal, &emp.UrgentDocType,
+		&emp.ExpiredCount, &emp.ExpiringCount,
 	)
 }
 
 // ── Create ─────────────────────────────────────────────────────
 
 // Create handles POST /api/employees
+// After inserting the employee, it auto-creates 7 mandatory document
+// slots so that compliance posture is immediately visible.
 func (h *EmployeeHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateEmployeeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -85,20 +104,30 @@ func (h *EmployeeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		req.Status = "active"
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	pool := h.db.GetPool()
 
+	// Use a transaction: insert employee + 7 mandatory doc slots
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		log.Printf("Error starting transaction: %v", err)
+		JSONError(w, http.StatusInternalServerError, "Failed to create employee")
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Insert the employee
 	var employee models.Employee
-	err := pool.QueryRow(ctx, `
-		INSERT INTO employees AS e (
+	err = tx.QueryRow(ctx, `
+		INSERT INTO employees (
 			company_id, name, trade, mobile, joining_date, photo_url,
 			gender, date_of_birth, nationality, passport_number,
 			native_location, current_location, salary, status
 		)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-		RETURNING `+employeeCols,
+		RETURNING `+employeeRetCols,
 		req.CompanyID, req.Name, req.Trade, req.Mobile, req.JoiningDate,
 		nilIfEmpty(req.PhotoURL),
 		req.Gender, req.DateOfBirth, req.Nationality, req.PassportNumber,
@@ -109,10 +138,37 @@ func (h *EmployeeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		&employee.PhotoURL,
 		&employee.Gender, &employee.DateOfBirth, &employee.Nationality, &employee.PassportNumber,
 		&employee.NativeLocation, &employee.CurrentLocation, &employee.Salary, &employee.Status,
+		&employee.ExitType, &employee.ExitDate, &employee.ExitNotes,
 		&employee.CreatedAt, &employee.UpdatedAt,
 	)
 	if err != nil {
 		log.Printf("Error creating employee: %v", err)
+		JSONError(w, http.StatusInternalServerError, "Failed to create employee")
+		return
+	}
+
+	// 2. Auto-create 7 mandatory document slots (incomplete — no file/expiry yet)
+	for _, md := range compliance.MandatoryDocs {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO documents (
+				employee_id, document_type,
+				grace_period_days, fine_per_day, fine_type, fine_cap,
+				is_mandatory, is_primary,
+				file_url, file_name, file_size, file_type
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, TRUE, FALSE, '', '', 0, '')
+		`, employee.ID, md.DocType,
+			md.GracePeriodDays, md.FinePerDay, md.FineType, md.FineCap,
+		)
+		if err != nil {
+			log.Printf("Error creating mandatory doc slot %s for employee %s: %v",
+				md.DocType, employee.ID, err)
+			// Continue — non-fatal, can be fixed manually
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("Error committing employee creation: %v", err)
 		JSONError(w, http.StatusInternalServerError, "Failed to create employee")
 		return
 	}
@@ -205,20 +261,34 @@ func (h *EmployeeHandler) List(w http.ResponseWriter, r *http.Request) {
 		argIdx++
 	}
 
-	// Doc status filter — now uses the primary document via LEFT JOIN
-	statusFilter := ""
-	if docStatus == "expiring" {
-		statusFilter = " AND pd.expiry_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'"
-	} else if docStatus == "expired" {
-		statusFilter = " AND pd.expiry_date < CURRENT_DATE"
-	} else if docStatus == "valid" || docStatus == "active" {
-		statusFilter = " AND pd.expiry_date > CURRENT_DATE + INTERVAL '30 days'"
+	// Doc status filter — uses the primary document via LEFT JOIN
+	var statusFilter string
+	switch docStatus {
+	case "expiring", "expiring_soon":
+		statusFilter = " AND ds.compliance_status = 'expiring'"
+	case "expired", "penalty_active":
+		statusFilter = " AND ds.compliance_status = 'expired'"
+	case "valid", "active":
+		statusFilter = " AND ds.compliance_status = 'valid'"
+	case "incomplete":
+		statusFilter = " AND ds.compliance_status = 'incomplete'"
 	}
 
 	// Count total for pagination
 	countQuery := fmt.Sprintf(`
 		SELECT COUNT(*) FROM employees e
-		LEFT JOIN documents pd ON pd.employee_id = e.id AND pd.is_primary = TRUE
+		LEFT JOIN LATERAL (
+			SELECT
+				CASE
+					WHEN COUNT(*) = 0 THEN 'none'
+					WHEN MIN(expiry_date) < CURRENT_DATE THEN 'expired'
+					WHEN MIN(expiry_date) <= CURRENT_DATE + INTERVAL '30 days' THEN 'expiring'
+					WHEN COUNT(*) FILTER (WHERE expiry_date IS NOT NULL) = COUNT(*) THEN 'valid'
+					ELSE 'incomplete'
+				END AS compliance_status
+			FROM documents
+			WHERE employee_id = e.id AND is_mandatory = TRUE
+		) ds ON TRUE
 		%s %s
 	`, where, statusFilter)
 	var total int
@@ -228,22 +298,43 @@ func (h *EmployeeHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch employees — doc status derived from primary document only
+	// Fetch employees — compliance aggregated across ALL mandatory docs
 	query := fmt.Sprintf(`
 		SELECT 
 			%s,
 			c.name AS company_name,
-			CASE
-				WHEN pd.expiry_date IS NULL THEN 'none'
-				WHEN pd.expiry_date < CURRENT_DATE THEN 'expired'
-				WHEN pd.expiry_date <= CURRENT_DATE + INTERVAL '30 days' THEN 'expiring'
-				ELSE 'valid'
-			END AS doc_status,
-			(pd.expiry_date - CURRENT_DATE) AS expiry_days_left,
-			pd.document_type AS primary_doc_type
+			COALESCE(c.currency, 'AED') AS company_currency,
+			ds.compliance_status,
+			ds.nearest_expiry_days,
+			ds.docs_complete,
+			ds.docs_total,
+			ds.urgent_doc_type,
+			ds.expired_count,
+			ds.expiring_count
 		FROM employees e
 		JOIN companies c ON e.company_id = c.id
-		LEFT JOIN documents pd ON pd.employee_id = e.id AND pd.is_primary = TRUE
+		LEFT JOIN LATERAL (
+			SELECT
+				CASE
+					WHEN COUNT(*) = 0 THEN 'none'
+					WHEN MIN(expiry_date) < CURRENT_DATE THEN 'expired'
+					WHEN MIN(expiry_date) <= CURRENT_DATE + INTERVAL '30 days' THEN 'expiring'
+					WHEN COUNT(*) FILTER (WHERE expiry_date IS NOT NULL) = COUNT(*) THEN 'valid'
+					ELSE 'incomplete'
+				END AS compliance_status,
+				MIN(expiry_date) - CURRENT_DATE AS nearest_expiry_days,
+				COUNT(*) FILTER (WHERE expiry_date IS NOT NULL)::int AS docs_complete,
+				COUNT(*)::int AS docs_total,
+				(SELECT document_type FROM documents
+				 WHERE employee_id = e.id AND is_mandatory = TRUE
+				   AND expiry_date IS NOT NULL
+				 ORDER BY expiry_date ASC LIMIT 1
+				) AS urgent_doc_type,
+				COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date < CURRENT_DATE)::int AS expired_count,
+				COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL '30 days')::int AS expiring_count
+			FROM documents
+			WHERE employee_id = e.id AND is_mandatory = TRUE
+		) ds ON TRUE
 		%s %s
 		ORDER BY %s %s
 		LIMIT $%d OFFSET $%d
@@ -283,6 +374,7 @@ func (h *EmployeeHandler) List(w http.ResponseWriter, r *http.Request) {
 // ── GetByID ────────────────────────────────────────────────────
 
 // GetByID handles GET /api/employees/{id}
+// Returns employee profile + all documents with computed compliance.
 func (h *EmployeeHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
@@ -300,26 +392,50 @@ func (h *EmployeeHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		SELECT 
 			%s,
 			c.name AS company_name,
-			CASE
-				WHEN pd.expiry_date IS NULL THEN 'none'
-				WHEN pd.expiry_date < CURRENT_DATE THEN 'expired'
-				WHEN pd.expiry_date <= CURRENT_DATE + INTERVAL '30 days' THEN 'expiring'
-				ELSE 'valid'
-			END AS doc_status,
-			(pd.expiry_date - CURRENT_DATE) AS expiry_days_left,
-			pd.document_type AS primary_doc_type
+			COALESCE(c.currency, 'AED') AS company_currency,
+			ds.compliance_status,
+			ds.nearest_expiry_days,
+			ds.docs_complete,
+			ds.docs_total,
+			ds.urgent_doc_type,
+			ds.expired_count,
+			ds.expiring_count
 		FROM employees e
 		JOIN companies c ON e.company_id = c.id
-		LEFT JOIN documents pd ON pd.employee_id = e.id AND pd.is_primary = TRUE
+		LEFT JOIN LATERAL (
+			SELECT
+				CASE
+					WHEN COUNT(*) = 0 THEN 'none'
+					WHEN MIN(expiry_date) < CURRENT_DATE THEN 'expired'
+					WHEN MIN(expiry_date) <= CURRENT_DATE + INTERVAL '30 days' THEN 'expiring'
+					WHEN COUNT(*) FILTER (WHERE expiry_date IS NOT NULL) = COUNT(*) THEN 'valid'
+					ELSE 'incomplete'
+				END AS compliance_status,
+				MIN(expiry_date) - CURRENT_DATE AS nearest_expiry_days,
+				COUNT(*) FILTER (WHERE expiry_date IS NOT NULL)::int AS docs_complete,
+				COUNT(*)::int AS docs_total,
+				(SELECT document_type FROM documents
+				 WHERE employee_id = e.id AND is_mandatory = TRUE
+				   AND expiry_date IS NOT NULL
+				 ORDER BY expiry_date ASC LIMIT 1
+				) AS urgent_doc_type,
+				COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date < CURRENT_DATE)::int AS expired_count,
+				COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL '30 days')::int AS expiring_count
+			FROM documents
+			WHERE employee_id = e.id AND is_mandatory = TRUE
+		) ds ON TRUE
 		WHERE e.id = $1
-	`, employeeCols), id).Scan(
+	`, employeeCols), id,
+	).Scan(
 		&emp.ID, &emp.CompanyID, &emp.Name, &emp.Trade, &emp.Mobile,
 		&emp.JoiningDate, &emp.PhotoURL,
 		&emp.Gender, &emp.DateOfBirth, &emp.Nationality, &emp.PassportNumber,
 		&emp.NativeLocation, &emp.CurrentLocation, &emp.Salary, &emp.Status,
+		&emp.ExitType, &emp.ExitDate, &emp.ExitNotes,
 		&emp.CreatedAt, &emp.UpdatedAt,
-		&emp.CompanyName, &emp.DocStatus,
-		&emp.ExpiryDaysLeft, &emp.PrimaryDocType,
+		&emp.CompanyName, &emp.CompanyCurrency,
+		&emp.ComplianceStatus, &emp.NearestExpiryDays,
+		&emp.DocsComplete, &emp.DocsTotal, &emp.UrgentDocType,
 	)
 	if err != nil {
 		log.Printf("Error fetching employee %s: %v", id, err)
@@ -327,47 +443,83 @@ func (h *EmployeeHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch documents for this employee (with nullable expiry + primary flag)
-	docRows, err := pool.Query(ctx, `
-		SELECT d.id, d.employee_id, d.document_type,
-			COALESCE(d.expiry_date::text, ''),
-			d.is_primary,
-			d.file_url, d.file_name, d.file_size, d.file_type,
-			d.last_updated, d.created_at
-		FROM documents d
-		WHERE d.employee_id = $1
-		ORDER BY d.is_primary DESC, d.expiry_date ASC NULLS LAST
-	`, id)
-	if err != nil {
-		log.Printf("Error fetching documents for employee %s: %v", id, err)
-		JSONError(w, http.StatusInternalServerError, "Failed to fetch employee documents")
+	JSON(w, http.StatusOK, map[string]interface{}{
+		"data": emp,
+	})
+}
+
+// ── Exit ───────────────────────────────────────────────────────
+
+// Exit handles PATCH /api/employees/{id}/exit
+// Records an employee exit (resignation, termination, absconsion).
+func (h *EmployeeHandler) Exit(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		JSONError(w, http.StatusBadRequest, "Employee ID is required")
 		return
 	}
-	defer docRows.Close()
 
-	documents := []models.Document{}
-	for docRows.Next() {
-		var doc models.Document
-		var expiryRaw string
-		if err := docRows.Scan(
-			&doc.ID, &doc.EmployeeID, &doc.DocumentType,
-			&expiryRaw,
-			&doc.IsPrimary,
-			&doc.FileURL, &doc.FileName, &doc.FileSize, &doc.FileType,
-			&doc.LastUpdated, &doc.CreatedAt,
-		); err != nil {
-			log.Printf("Error scanning document: %v", err)
-			continue
-		}
-		if expiryRaw != "" {
-			doc.ExpiryDate = &expiryRaw
-		}
-		documents = append(documents, doc)
+	var req models.ExitEmployeeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		JSONError(w, http.StatusBadRequest, "Invalid JSON body")
+		return
 	}
 
+	// Validate exit type
+	validExitTypes := map[string]bool{"resigned": true, "terminated": true, "absconded": true}
+	if !validExitTypes[req.ExitType] {
+		JSONError(w, http.StatusUnprocessableEntity, "Exit type must be 'resigned', 'terminated', or 'absconded'")
+		return
+	}
+	if req.ExitDate == "" {
+		JSONError(w, http.StatusUnprocessableEntity, "Exit date is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	pool := h.db.GetPool()
+
+	// Map exit type to employee status
+	statusMap := map[string]string{
+		"resigned":   "resigned",
+		"terminated": "terminated",
+		"absconded":  "terminated",
+	}
+
+	var employee models.Employee
+	err := pool.QueryRow(ctx, `
+		UPDATE employees SET
+			status = $1, exit_type = $2, exit_date = $3, exit_notes = $4,
+			updated_at = NOW()
+		WHERE id = $5
+		RETURNING `+employeeRetCols,
+		statusMap[req.ExitType], req.ExitType, req.ExitDate, req.ExitNotes, id,
+	).Scan(
+		&employee.ID, &employee.CompanyID, &employee.Name,
+		&employee.Trade, &employee.Mobile, &employee.JoiningDate,
+		&employee.PhotoURL,
+		&employee.Gender, &employee.DateOfBirth, &employee.Nationality, &employee.PassportNumber,
+		&employee.NativeLocation, &employee.CurrentLocation, &employee.Salary, &employee.Status,
+		&employee.ExitType, &employee.ExitDate, &employee.ExitNotes,
+		&employee.CreatedAt, &employee.UpdatedAt,
+	)
+	if err != nil {
+		log.Printf("Error recording employee exit %s: %v", id, err)
+		JSONError(w, http.StatusNotFound, "Employee not found")
+		return
+	}
+
+	// Audit trail
+	userID, _ := r.Context().Value(ctxkeys.UserID).(string)
+	logActivity(pool, userID, "exited", "employee", employee.ID, map[string]interface{}{
+		"name": employee.Name, "exitType": req.ExitType,
+	})
+
 	JSON(w, http.StatusOK, map[string]interface{}{
-		"data":      emp,
-		"documents": documents,
+		"data":    employee,
+		"message": "Employee exit recorded successfully",
 	})
 }
 
@@ -455,22 +607,14 @@ func (h *EmployeeHandler) Update(w http.ResponseWriter, r *http.Request) {
 	setClauses = append(setClauses, "updated_at = NOW()")
 
 	query := fmt.Sprintf(`
-		UPDATE employees AS e SET %s
+		UPDATE employees SET %s
 		WHERE id = $%d
 		RETURNING %s
-	`, strings.Join(setClauses, ", "), argIdx, employeeCols)
+	`, strings.Join(setClauses, ", "), argIdx, employeeRetCols)
 	args = append(args, id)
 
 	var employee models.Employee
-	err := pool.QueryRow(ctx, query, args...).Scan(
-		&employee.ID, &employee.CompanyID, &employee.Name,
-		&employee.Trade, &employee.Mobile, &employee.JoiningDate,
-		&employee.PhotoURL,
-		&employee.Gender, &employee.DateOfBirth, &employee.Nationality, &employee.PassportNumber,
-		&employee.NativeLocation, &employee.CurrentLocation, &employee.Salary, &employee.Status,
-		&employee.CreatedAt, &employee.UpdatedAt,
-	)
-	if err != nil {
+	if err := scanEmployee(pool.QueryRow(ctx, query, args...), &employee); err != nil {
 		log.Printf("Error updating employee %s: %v", id, err)
 		JSONError(w, http.StatusNotFound, "Employee not found")
 		return
@@ -521,6 +665,47 @@ func (h *EmployeeHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	JSON(w, http.StatusOK, map[string]string{
 		"message": "Employee deleted successfully",
+	})
+}
+
+// ── BatchDelete ────────────────────────────────────────────────
+
+// BatchDelete handles POST /api/employees/batch-delete
+// Accepts { "ids": ["uuid1", "uuid2", ...] } and deletes all matching employees.
+func (h *EmployeeHandler) BatchDelete(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		JSONError(w, http.StatusBadRequest, "Invalid JSON body")
+		return
+	}
+	if len(req.IDs) == 0 {
+		JSONError(w, http.StatusBadRequest, "No employee IDs provided")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	pool := h.db.GetPool()
+
+	tag, err := pool.Exec(ctx, "DELETE FROM employees WHERE id = ANY($1::uuid[])", req.IDs)
+	if err != nil {
+		log.Printf("Error batch deleting employees: %v", err)
+		JSONError(w, http.StatusInternalServerError, "Failed to delete employees")
+		return
+	}
+
+	// Audit trail
+	userID, _ := r.Context().Value(ctxkeys.UserID).(string)
+	for _, id := range req.IDs {
+		logActivity(pool, userID, "deleted", "employee", id, nil)
+	}
+
+	JSON(w, http.StatusOK, map[string]interface{}{
+		"message": fmt.Sprintf("%d employee(s) deleted successfully", tag.RowsAffected()),
+		"deleted": tag.RowsAffected(),
 	})
 }
 

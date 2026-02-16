@@ -4,6 +4,10 @@ export interface Company {
     id: string;
     name: string;
     currency: string;
+    tradeLicenseNumber?: string | null;
+    establishmentCardNumber?: string | null;
+    mohreCategory?: string | null;        // "1" | "2" | "3"
+    regulatoryAuthority?: string | null;  // "MOHRE" | "JAFZA" | "DMCC" | etc.
     employeeCount?: number;
     createdAt: string;
     updatedAt: string;
@@ -12,6 +16,7 @@ export interface Company {
 export interface CompanySummary {
     id: string;
     name: string;
+    currency: string;
     employeeCount: number;
 }
 
@@ -30,24 +35,42 @@ export interface Employee {
     nativeLocation?: string | null;
     currentLocation?: string | null;
     salary?: number | null;
-    status: string; // active, inactive, on_leave
+    status: string; // active, inactive, on_leave, terminated, resigned
+    exitType?: string | null;   // resigned, terminated, absconded
+    exitDate?: string | null;
+    exitNotes?: string | null;
     createdAt: string;
     updatedAt: string;
 }
 
 export interface EmployeeWithCompany extends Employee {
     companyName: string;
-    docStatus: 'valid' | 'expiring' | 'expired' | 'none';
-    expiryDaysLeft?: number | null;   // days until primary doc expires (negative = overdue)
-    primaryDocType?: string | null;   // e.g. "Work Permit"
+    companyCurrency: string;
+    complianceStatus: 'expired' | 'expiring' | 'valid' | 'incomplete' | 'none';
+    nearestExpiryDays?: number | null;
+    docsComplete: number;
+    docsTotal: number;
+    urgentDocType?: string | null;
+    expiredCount: number;
+    expiringCount: number;
 }
+
+// ── Documents ─────────────────────────────────────────────────
 
 export interface Document {
     id: string;
     employeeId: string;
     documentType: string;
-    expiryDate?: string | null;   // nullable — docs without expiry are allowed
-    isPrimary: boolean;           // only one per employee — the tracked doc
+    documentNumber?: string | null;
+    issueDate?: string | null;
+    expiryDate?: string | null;
+    gracePeriodDays: number;
+    finePerDay: number;
+    fineType: string;       // "daily" | "monthly" | "one_time"
+    fineCap: number;
+    isPrimary: boolean;
+    isMandatory: boolean;
+    metadata: Record<string, unknown>;
     fileUrl: string;
     fileName: string;
     fileSize: number;
@@ -55,6 +78,23 @@ export interface Document {
     lastUpdated: string;
     createdAt: string;
 }
+
+/** Document with computed compliance fields (returned from API) */
+export interface DocumentWithCompliance extends Document {
+    status: DocComplianceStatus;
+    displayName: string;
+    estimatedFine: number;
+    daysRemaining?: number | null;
+    graceDaysRemaining?: number | null;
+    daysInPenalty?: number | null;
+}
+
+export type DocComplianceStatus =
+    | 'incomplete'
+    | 'valid'
+    | 'expiring_soon'
+    | 'in_grace'
+    | 'penalty_active';
 
 // ── Salary ────────────────────────────────────────────────────
 
@@ -132,6 +172,40 @@ export interface ExpiryAlert {
     expiryDate: string;
     daysLeft: number;
     status: 'expired' | 'urgent' | 'warning';
+    estimatedFine: number;
+    finePerDay: number;
+}
+
+// ── Compliance Stats ──────────────────────────────────────────
+
+export interface ComplianceStats {
+    totalEmployees: number;
+    totalDocuments: number;
+    documentsByStatus: Record<DocComplianceStatus, number>;
+    completionRate: number;
+    totalDailyFine: number;
+    totalAccumulated: number;
+    companyBreakdown: CompanyCompliance[];
+    criticalAlerts: ExpiryAlert[];
+}
+
+export interface CompanyCompliance {
+    companyId: string;
+    companyName: string;
+    employeeCount: number;
+    penaltyCount: number;
+    incompleteCount: number;
+    dailyExposure: number;
+    accumulatedFines: number;
+}
+
+export interface DependencyAlert {
+    severity: 'critical' | 'warning';
+    blockingDoc: string;
+    blockedDoc: string;
+    message: string;
+    blockingExpiry: string;
+    blockedExpiry: string;
 }
 
 // ── API Requests ──────────────────────────────────────────────
@@ -140,7 +214,7 @@ export interface CreateEmployeeRequest {
     companyId: string;
     name: string;
     trade: string;
-    mobile: string;
+    mobile?: string;        // now optional
     joiningDate: string;
     photoUrl?: string;
     gender?: string;
@@ -153,13 +227,35 @@ export interface CreateEmployeeRequest {
     status?: string;
 }
 
+export interface ExitEmployeeRequest {
+    exitType: 'resigned' | 'terminated' | 'absconded';
+    exitDate: string;
+    exitNotes?: string;
+}
+
 export interface CreateDocumentRequest {
     documentType: string;
+    documentNumber?: string;
+    issueDate?: string;
     expiryDate?: string;
+    gracePeriodDays?: number;
+    finePerDay?: number;
+    fineType?: string;
+    fineCap?: number;
+    metadata?: Record<string, unknown>;
     fileUrl: string;
     fileName: string;
     fileSize: number;
     fileType: string;
+}
+
+export interface CreateCompanyRequest {
+    name: string;
+    currency?: string;
+    tradeLicenseNumber?: string;
+    establishmentCardNumber?: string;
+    mohreCategory?: string;
+    regulatoryAuthority?: string;
 }
 
 // ── API Responses ─────────────────────────────────────────────
@@ -178,8 +274,8 @@ export interface ApiError {
 export interface EmployeeFilters {
     company_id?: string;
     trade?: string;
-    status?: string;         // document status: valid, expiring, expired
-    emp_status?: string;     // employee status: active, inactive, on_leave
+    status?: string;         // document status: valid, expiring, expired, incomplete, penalty_active
+    emp_status?: string;     // employee status: active, inactive, on_leave, terminated, resigned
     nationality?: string;
     search?: string;
     sort_by?: string;

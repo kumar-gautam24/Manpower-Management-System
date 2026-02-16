@@ -10,10 +10,10 @@ import { Label } from '@/components/ui/label';
 import { Loader2, Upload, FileText, Image, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
-import type { Document } from '@/types';
+import type { Document, DocumentWithCompliance } from '@/types';
 
 interface RenewDocumentDialogProps {
-    document: Document; // The document being renewed
+    document: Document | DocumentWithCompliance; // The document being renewed
     open: boolean;
     onOpenChange: (open: boolean) => void;
     onSuccess: () => void;
