@@ -18,12 +18,7 @@ import { ArrowLeft, Loader2, Save } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { Company, EmployeeWithCompany } from '@/types';
 import { toast } from 'sonner';
-
-const COMMON_TRADES = [
-    'Welder', 'Electrician', 'Plumber', 'Engineer', 'Technician',
-    'Driver', 'Helper', 'Safety Officer', 'Carpenter', 'Painter',
-    'Mason', 'Foreman', 'Supervisor',
-];
+import { TradeSelect, COMMON_TRADES } from '@/components/trade-select';
 
 export default function EditEmployeePage() {
     const params = useParams();
@@ -49,7 +44,7 @@ export default function EditEmployeePage() {
         salary: undefined as number | undefined,
         status: 'active',
     });
-    const [customTrade, setCustomTrade] = useState(false);
+    const [isCustomTrade, setIsCustomTrade] = useState(false);
     const [errors, setErrors] = useState<Record<string, string>>({});
 
     const fetchData = useCallback(async () => {
@@ -77,7 +72,7 @@ export default function EditEmployeePage() {
                 status: emp.status || 'active',
             });
             if (!COMMON_TRADES.includes(emp.trade)) {
-                setCustomTrade(true);
+                setIsCustomTrade(true);
             }
         } catch (err) {
             console.error('Failed to load:', err);
@@ -99,7 +94,11 @@ export default function EditEmployeePage() {
         if (form.name.length < 2) errs.name = 'Name must be at least 2 characters';
         if (!form.trade) errs.trade = 'Trade is required';
         if (!form.companyId) errs.companyId = 'Company is required';
-        if (!form.mobile) errs.mobile = 'Mobile is required';
+        if (!form.mobile) {
+            errs.mobile = 'Mobile number is required';
+        } else if (!/^\+?[0-9]{7,15}$/.test(form.mobile.replace(/[\s-]/g, ''))) {
+            errs.mobile = 'Enter a valid mobile number (e.g. +971501234567)';
+        }
         if (!form.joiningDate) errs.joiningDate = 'Joining date is required';
         setErrors(errs);
         return Object.keys(errs).length === 0;
@@ -152,22 +151,11 @@ export default function EditEmployeePage() {
                         {/* Trade */}
                         <div className="space-y-2">
                             <Label>Trade / Job Role *</Label>
-                            {customTrade ? (
-                                <div className="flex gap-2">
-                                    <Input value={form.trade} onChange={(e) => setForm({ ...form, trade: e.target.value })} />
-                                    <Button type="button" variant="outline" size="sm" onClick={() => { setCustomTrade(false); setForm({ ...form, trade: '' }); }}>List</Button>
-                                </div>
-                            ) : (
-                                <div className="flex gap-2">
-                                    <Select value={form.trade} onValueChange={(v) => setForm({ ...form, trade: v })}>
-                                        <SelectTrigger><SelectValue placeholder="Select trade..." /></SelectTrigger>
-                                        <SelectContent>
-                                            {COMMON_TRADES.map((t) => (<SelectItem key={t} value={t}>{t}</SelectItem>))}
-                                        </SelectContent>
-                                    </Select>
-                                    <Button type="button" variant="outline" size="sm" onClick={() => setCustomTrade(true)}>Custom</Button>
-                                </div>
-                            )}
+                            <TradeSelect
+                                value={form.trade}
+                                onChange={(v) => setForm({ ...form, trade: v })}
+                                defaultCustom={isCustomTrade}
+                            />
                             {errors.trade && <p className="text-sm text-red-500">{errors.trade}</p>}
                         </div>
 
@@ -264,8 +252,8 @@ export default function EditEmployeePage() {
                         </div>
 
                         {/* Submit */}
-                        <div className="flex gap-3 pt-2">
-                            <Button type="submit" disabled={submitting} className="flex-1">
+                        <div className="flex justify-end gap-3 pt-2">
+                            <Button type="submit" disabled={submitting}>
                                 {submitting ? (<><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving...</>) : (<><Save className="h-4 w-4 mr-2" /> Save Changes</>)}
                             </Button>
                             <Link href={`/employees/${id}`}>

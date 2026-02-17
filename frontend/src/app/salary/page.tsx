@@ -6,8 +6,12 @@ import type { SalaryRecordWithEmployee, SalarySummary, Company } from '@/types';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+    Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
 import { useUser } from '@/hooks/use-user';
-import { DollarSign, Download, RefreshCw, CheckCircle, Clock, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
+import { DollarSign, Download, RefreshCw, CheckCircle, Clock, AlertTriangle, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 
 const MONTHS = [
     'January', 'February', 'March', 'April', 'May', 'June',
@@ -38,8 +42,8 @@ export default function SalaryPage() {
             ]);
             setRecords(listRes.data || []);
             setSummary(summaryRes.data);
-        } catch (e) {
-            console.error('Failed to fetch salary data', e);
+        } catch {
+            toast.error('Failed to load salary data');
         } finally {
             setLoading(false);
         }
@@ -72,8 +76,8 @@ export default function SalaryPage() {
         try {
             await api.salary.updateStatus(id, newStatus);
             fetchData();
-        } catch (e) {
-            console.error(e);
+        } catch {
+            toast.error('Failed to update salary status');
         }
     };
 
@@ -81,15 +85,21 @@ export default function SalaryPage() {
         if (selected.size === 0) return;
         try {
             await api.salary.bulkUpdateStatus(Array.from(selected), 'paid');
+            toast.success(`${selected.size} records marked as paid`);
             setSelected(new Set());
             fetchData();
-        } catch (e) {
-            console.error(e);
+        } catch {
+            toast.error('Failed to update salary records');
         }
     };
 
-    const handleExport = () => {
-        api.salary.export(month, year);
+    const handleExport = async () => {
+        try {
+            await api.salary.export(month, year);
+            toast.success('Salary data exported');
+        } catch {
+            toast.error('Failed to export salary data');
+        }
     };
 
     const prevMonth = () => {
@@ -117,9 +127,9 @@ export default function SalaryPage() {
     };
 
     const statusBadge = (status: string) => {
-        if (status === 'paid') return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"><CheckCircle className="h-3 w-3" /> Paid</span>;
-        if (status === 'partial') return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400"><AlertTriangle className="h-3 w-3" /> Partial</span>;
-        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"><Clock className="h-3 w-3" /> Pending</span>;
+        if (status === 'paid') return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400"><CheckCircle className="h-3 w-3" /> Paid</span>;
+        if (status === 'partial') return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400"><AlertTriangle className="h-3 w-3" /> Partial</span>;
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"><Clock className="h-3 w-3" /> Pending</span>;
     };
 
     return (
@@ -135,7 +145,7 @@ export default function SalaryPage() {
                         <Download className="h-4 w-4 mr-1" /> Export CSV
                     </Button>
                     {isAdmin && (
-                        <Button onClick={handleGenerate} disabled={generating} size="sm" className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700">
+                        <Button onClick={handleGenerate} disabled={generating} size="sm">
                             <RefreshCw className={`h-4 w-4 mr-1 ${generating ? 'animate-spin' : ''}`} />
                             Generate
                         </Button>
@@ -164,20 +174,24 @@ export default function SalaryPage() {
 
             {/* Filters */}
             <div className="flex flex-wrap items-center gap-3">
-                <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
-                    className="text-sm px-3 py-1.5 rounded-lg border border-border bg-card text-foreground">
-                    <option value="all">All Statuses</option>
-                    <option value="pending">Pending</option>
-                    <option value="paid">Paid</option>
-                    <option value="partial">Partial</option>
-                </select>
-                <select value={companyFilter} onChange={e => setCompanyFilter(e.target.value)}
-                    className="text-sm px-3 py-1.5 rounded-lg border border-border bg-card text-foreground">
-                    <option value="">All Companies</option>
-                    {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+                <Select value={statusFilter} onValueChange={setStatusFilter}>
+                    <SelectTrigger className="w-[140px]"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value="all">All Statuses</SelectItem>
+                        <SelectItem value="pending">Pending</SelectItem>
+                        <SelectItem value="paid">Paid</SelectItem>
+                        <SelectItem value="partial">Partial</SelectItem>
+                    </SelectContent>
+                </Select>
+                <Select value={companyFilter || 'all'} onValueChange={(v) => setCompanyFilter(v === 'all' ? '' : v)}>
+                    <SelectTrigger className="w-[160px]"><SelectValue placeholder="Company" /></SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value="all">All Companies</SelectItem>
+                        {companies.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                    </SelectContent>
+                </Select>
                 {isAdmin && selected.size > 0 && (
-                    <Button onClick={handleBulkPaid} size="sm" variant="outline" className="text-emerald-600 border-emerald-300 dark:border-emerald-700">
+                    <Button onClick={handleBulkPaid} size="sm" variant="outline" className="text-green-600 border-green-300 dark:border-green-700">
                         <CheckCircle className="h-4 w-4 mr-1" /> Mark {selected.size} as Paid
                     </Button>
                 )}
@@ -187,7 +201,7 @@ export default function SalaryPage() {
             <div className="bg-card rounded-xl border border-border overflow-hidden shadow-sm">
                 {loading ? (
                     <div className="flex items-center justify-center py-16">
-                        <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
                     </div>
                 ) : records.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-16 gap-3">
@@ -203,8 +217,10 @@ export default function SalaryPage() {
 
                                     {isAdmin && (
                                         <th className="px-4 py-3 text-left">
-                                            <input type="checkbox" checked={selected.size === records.length && records.length > 0}
-                                                onChange={toggleSelectAll} className="rounded border-border" />
+                                            <Checkbox
+                                                checked={selected.size === records.length && records.length > 0}
+                                                onCheckedChange={toggleSelectAll}
+                                            />
                                         </th>
                                     )}
                                     <th className="px-4 py-3 text-left font-medium text-muted-foreground">Employee</th>
@@ -220,8 +236,10 @@ export default function SalaryPage() {
                                     <tr key={rec.id} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
                                         {isAdmin && (
                                             <td className="px-4 py-3">
-                                                <input type="checkbox" checked={selected.has(rec.id)}
-                                                    onChange={() => toggleSelect(rec.id)} className="rounded border-border" />
+                                                <Checkbox
+                                                    checked={selected.has(rec.id)}
+                                                    onCheckedChange={() => toggleSelect(rec.id)}
+                                                />
                                             </td>
                                         )}
                                         <td className="px-4 py-3 font-medium text-foreground">{rec.employeeName}</td>
@@ -237,8 +255,8 @@ export default function SalaryPage() {
                                                 <Button variant="ghost" size="sm"
                                                     onClick={() => handleToggleStatus(rec.id, rec.status)}
                                                     className={rec.status === 'paid'
-                                                        ? 'text-amber-600 hover:text-amber-700'
-                                                        : 'text-emerald-600 hover:text-emerald-700'
+                                                        ? 'text-yellow-600 hover:text-yellow-700'
+                                                        : 'text-green-600 hover:text-green-700'
                                                     }>
                                                     {rec.status === 'paid' ? 'Undo' : 'Mark Paid'}
                                                 </Button>
@@ -255,16 +273,9 @@ export default function SalaryPage() {
     );
 }
 
-function SummaryCard({ title, value, sub, color }: { title: string; value: string; sub: string; color: string }) {
-    const colors: Record<string, string> = {
-        blue: 'from-blue-500/10 to-indigo-500/10 border-blue-200 dark:border-blue-800',
-        emerald: 'from-emerald-500/10 to-teal-500/10 border-emerald-200 dark:border-emerald-800',
-        slate: 'from-slate-500/10 to-gray-500/10 border-slate-200 dark:border-slate-700',
-        amber: 'from-amber-500/10 to-yellow-500/10 border-amber-200 dark:border-amber-800',
-    };
-
+function SummaryCard({ title, value, sub }: { title: string; value: string; sub: string; color?: string }) {
     return (
-        <div className={`rounded-xl border bg-gradient-to-br ${colors[color] || colors.blue} p-4`}>
+        <div className="rounded-xl border border-border bg-card p-4">
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{title}</p>
             <p className="text-xl font-bold text-foreground mt-1">{value}</p>
             <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>

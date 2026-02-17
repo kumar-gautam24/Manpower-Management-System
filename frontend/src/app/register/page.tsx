@@ -14,6 +14,7 @@ export default function RegisterPage() {
     const [name, setName] = useState('');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
 
@@ -23,6 +24,11 @@ export default function RegisterPage() {
 
         if (password.length < 6) {
             setError('Password must be at least 6 characters');
+            return;
+        }
+
+        if (password !== confirmPassword) {
+            setError('Passwords do not match');
             return;
         }
 
@@ -37,7 +43,7 @@ export default function RegisterPage() {
     };
 
     return (
-        <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/20 dark:from-slate-950 dark:via-blue-950/20 dark:to-indigo-950/10 p-4">
+        <div className="min-h-screen flex items-center justify-center bg-background p-4">
             <div className="w-full max-w-sm space-y-6">
                 {/* Logo */}
                 <div className="text-center">
@@ -94,6 +100,19 @@ export default function RegisterPage() {
                                     placeholder="At least 6 characters"
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
+                                    required
+                                    minLength={6}
+                                />
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label htmlFor="confirmPassword">Confirm Password</Label>
+                                <Input
+                                    id="confirmPassword"
+                                    type="password"
+                                    placeholder="Re-enter your password"
+                                    value={confirmPassword}
+                                    onChange={(e) => setConfirmPassword(e.target.value)}
                                     required
                                     minLength={6}
                                 />

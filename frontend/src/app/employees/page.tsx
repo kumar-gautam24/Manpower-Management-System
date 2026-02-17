@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -18,6 +19,7 @@ import {
     AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { api } from '@/lib/api';
+import { docDisplayName, getStatusConfig } from '@/lib/constants';
 import type { EmployeeWithCompany, Company } from '@/types';
 import { useUser } from '@/hooks/use-user';
 import { toast } from 'sonner';
@@ -26,6 +28,8 @@ const DOC_STATUS_OPTIONS = [
     { value: 'all', label: 'All Docs' },
     { value: 'valid', label: 'Valid' },
     { value: 'expiring', label: 'Expiring' },
+    { value: 'in_grace', label: 'In Grace' },
+    { value: 'penalty_active', label: 'Penalty Active' },
     { value: 'expired', label: 'Expired' },
     { value: 'incomplete', label: 'Incomplete' },
 ];
@@ -44,87 +48,41 @@ const SORT_OPTIONS = [
     { value: 'created_at', label: 'Date Added' },
 ];
 
-/** Map snake_case doc types to human-readable names */
-const DOC_DISPLAY_NAME: Record<string, string> = {
-    passport: 'Passport',
-    visa: 'Residence Visa',
-    emirates_id: 'Emirates ID',
-    work_permit: 'Work Permit',
-    health_insurance: 'Health Insurance',
-    iloe_insurance: 'ILOE Insurance',
-    medical_fitness: 'Medical Fitness',
-};
-
-function docLabel(type?: string | null): string {
-    if (!type) return 'Document';
-    return DOC_DISPLAY_NAME[type] || type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-}
-
 /** Build a human-readable compliance summary for the card */
 function getComplianceInfo(emp: EmployeeWithCompany) {
     const days = emp.nearestExpiryDays ?? 0;
     const absDays = Math.abs(days);
-    const urgentName = docLabel(emp.urgentDocType);
+    const urgentName = docDisplayName(emp.urgentDocType);
 
     if (emp.complianceStatus === 'expired') {
+        const s = getStatusConfig('expired');
         const others = emp.expiredCount - 1;
         const who = others > 0 ? `${urgentName} +${others} other${others > 1 ? 's' : ''}` : urgentName;
-        const when = absDays === 0 ? 'today' : absDays === 1 ? '1 day ago' : `${absDays} days ago`;
-        return {
-            text: `${who} expired`,
-            sub: when,
-            color: 'text-red-600 dark:text-red-400',
-            dotColor: 'bg-red-500',
-            badgeColor: 'bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-400 border-red-200 dark:border-red-800',
-            badgeLabel: 'Expired',
-        };
+        const when = absDays === 0 ? 'today' : absDays === 1 ? '1 day ago' : `${absDays} days ago — fine risk`;
+        return { text: `${who} expired`, sub: when, color: s.text, dotColor: s.dot, badgeColor: s.badge, badgeLabel: s.label };
     }
     if (emp.complianceStatus === 'expiring') {
+        const s = getStatusConfig('expiring');
         const others = emp.expiringCount - 1;
         const who = others > 0 ? `${urgentName} +${others} other${others > 1 ? 's' : ''}` : urgentName;
         const when = days === 0 ? 'today' : days === 1 ? '1 day left' : `${days} days left`;
-        return {
-            text: `${who} expiring soon`,
-            sub: when,
-            color: 'text-orange-600 dark:text-orange-400',
-            dotColor: 'bg-orange-500',
-            badgeColor: 'bg-orange-100 dark:bg-orange-950/40 text-orange-700 dark:text-orange-400 border-orange-200 dark:border-orange-800',
-            badgeLabel: 'Expiring',
-        };
+        return { text: `${who} expiring soon`, sub: when, color: s.text, dotColor: s.dot, badgeColor: s.badge, badgeLabel: s.label };
     }
     if (emp.complianceStatus === 'valid') {
-        return {
-            text: 'All documents valid',
-            sub: days > 0 ? `Next renewal in ${days} days` : '',
-            color: 'text-green-600 dark:text-green-400',
-            dotColor: 'bg-green-500',
-            badgeColor: 'bg-green-100 dark:bg-green-950/40 text-green-700 dark:text-green-400 border-green-200 dark:border-green-800',
-            badgeLabel: 'Valid',
-        };
+        const s = getStatusConfig('valid');
+        return { text: 'All documents valid', sub: days > 0 ? `Next renewal in ${days} days` : '', color: s.text, dotColor: s.dot, badgeColor: s.badge, badgeLabel: s.label };
     }
     if (emp.complianceStatus === 'incomplete') {
+        const s = getStatusConfig('incomplete');
         const missing = emp.docsTotal - emp.docsComplete;
-        return {
-            text: `${missing} document${missing > 1 ? 's' : ''} incomplete`,
-            sub: 'Missing data',
-            color: 'text-yellow-600 dark:text-yellow-500',
-            dotColor: 'bg-yellow-500',
-            badgeColor: 'bg-yellow-100 dark:bg-yellow-950/40 text-yellow-700 dark:text-yellow-400 border-yellow-200 dark:border-yellow-800',
-            badgeLabel: 'Incomplete',
-        };
+        return { text: `${missing} document${missing > 1 ? 's' : ''} incomplete`, sub: 'Missing data', color: s.text, dotColor: s.dot, badgeColor: s.badge, badgeLabel: s.label };
     }
-    // none
-    return {
-        text: 'No documents',
-        sub: '',
-        color: 'text-muted-foreground',
-        dotColor: 'bg-gray-400',
-        badgeColor: 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-700',
-        badgeLabel: 'No Docs',
-    };
+    const s = getStatusConfig('none');
+    return { text: 'No documents', sub: '', color: s.text, dotColor: s.dot, badgeColor: s.badge, badgeLabel: s.label };
 }
 
 export default function EmployeesPage() {
+    const searchParams = useSearchParams();
     const [employees, setEmployees] = useState<EmployeeWithCompany[]>([]);
     const [companies, setCompanies] = useState<Company[]>([]);
     const [loading, setLoading] = useState(true);
@@ -137,12 +95,24 @@ export default function EmployeesPage() {
     const [total, setTotal] = useState(0);
     const limit = 20;
 
-    // Filters
+    // Filters — initialize from URL params (dashboard drilldown links)
     const [search, setSearch] = useState('');
-    const [companyFilter, setCompanyFilter] = useState('all');
-    const [docStatusFilter, setDocStatusFilter] = useState('all');
-    const [empStatusFilter, setEmpStatusFilter] = useState('all');
-    const [tradeFilter, setTradeFilter] = useState('');
+    const [debouncedSearch, setDebouncedSearch] = useState('');
+    const [companyFilter, setCompanyFilter] = useState(searchParams.get('company_id') || 'all');
+    const [docStatusFilter, setDocStatusFilter] = useState(searchParams.get('status') || 'all');
+    const [empStatusFilter, setEmpStatusFilter] = useState(searchParams.get('emp_status') || 'all');
+    const [tradeFilter, setTradeFilter] = useState(searchParams.get('trade') || '');
+
+    // Debounce search — 300ms delay
+    const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const handleSearchChange = (value: string) => {
+        setSearch(value);
+        if (debounceTimer.current) clearTimeout(debounceTimer.current);
+        debounceTimer.current = setTimeout(() => {
+            setDebouncedSearch(value);
+            setPage(1);
+        }, 300);
+    };
 
     // Sorting
     const [sortBy, setSortBy] = useState('name');
@@ -201,7 +171,7 @@ export default function EmployeesPage() {
                 sort_by: sortBy,
                 sort_order: sortOrder,
             };
-            if (search) params.search = search;
+            if (debouncedSearch) params.search = debouncedSearch;
             if (companyFilter !== 'all') params.company_id = companyFilter;
             if (docStatusFilter !== 'all') params.status = docStatusFilter;
             if (empStatusFilter !== 'all') params.emp_status = empStatusFilter;
@@ -216,7 +186,7 @@ export default function EmployeesPage() {
         } finally {
             setLoading(false);
         }
-    }, [page, limit, search, companyFilter, docStatusFilter, empStatusFilter, tradeFilter, sortBy, sortOrder]);
+    }, [page, limit, debouncedSearch, companyFilter, docStatusFilter, empStatusFilter, tradeFilter, sortBy, sortOrder]);
 
     useEffect(() => { fetchCompanies(); }, [fetchCompanies]);
     useEffect(() => { fetchEmployees(); }, [fetchEmployees]);
@@ -319,7 +289,7 @@ export default function EmployeesPage() {
                     <Input
                         placeholder="Search by name..."
                         value={search}
-                        onChange={(e) => updateFilter(setSearch, e.target.value)}
+                        onChange={(e) => handleSearchChange(e.target.value)}
                         className="pl-9"
                     />
                 </div>

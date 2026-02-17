@@ -6,53 +6,55 @@ import Link from 'next/link';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
     AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
     AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import {
+    DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
     ArrowLeft, Pencil, Trash2, Phone, Building2, Calendar,
-    Briefcase, FileText, Plus, Loader2, AlertTriangle, XCircle, CheckCircle, Star, RefreshCw,
-    DollarSign, MapPin, Globe, User,
+    Briefcase, FileText, Plus, Loader2, Star, RefreshCw,
+    DollarSign, MapPin, Globe, User, MoreHorizontal, AlertTriangle, ExternalLink,
 } from 'lucide-react';
 import { api } from '@/lib/api';
-import type { EmployeeWithCompany, DocumentWithCompliance } from '@/types';
+import { getStatusConfig, docDisplayName, EMP_STATUS_COLORS } from '@/lib/constants';
+import type { EmployeeWithCompany, DocumentWithCompliance, DependencyAlert } from '@/types';
 import { toast } from 'sonner';
 import { AddDocumentDialog, EditDocumentDialog } from '@/components/documents/add-document-dialog';
 import { RenewDocumentDialog } from '@/components/documents/renew-document-dialog';
+import { DocumentTimeline } from '@/components/documents/document-timeline';
 import { useUser } from '@/hooks/use-user';
-
-/** Calculate document expiry status and days remaining */
-function getDocStatus(expiryDate: string) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const expiry = new Date(expiryDate);
-    const diffDays = Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-
-    if (diffDays < 0) return { label: 'Expired', color: 'bg-red-100 dark:bg-red-950/40 text-red-800 dark:text-red-400 border-red-200 dark:border-red-900', icon: XCircle, days: diffDays, priority: 0 };
-    if (diffDays <= 7) return { label: 'Urgent', color: 'bg-orange-100 dark:bg-orange-950/40 text-orange-800 dark:text-orange-400 border-orange-200 dark:border-orange-900', icon: AlertTriangle, days: diffDays, priority: 1 };
-    if (diffDays <= 30) return { label: 'Expiring', color: 'bg-yellow-100 dark:bg-yellow-950/40 text-yellow-800 dark:text-yellow-400 border-yellow-200 dark:border-yellow-900', icon: AlertTriangle, days: diffDays, priority: 2 };
-    return { label: 'Valid', color: 'bg-green-100 dark:bg-green-950/40 text-green-800 dark:text-green-400 border-green-200 dark:border-green-900', icon: CheckCircle, days: diffDays, priority: 3 };
-}
 
 /** Check if a doc slot is incomplete (no data filled in yet) */
 function isIncomplete(doc: DocumentWithCompliance): boolean {
-    return !doc.expiryDate && !doc.fileUrl;
+    return doc.status === 'incomplete';
 }
 
-/** Sort: expired/urgent first, then expiring, valid, pending last */
+/** Sort: penalty/grace first, then expiring, valid, incomplete last */
 function sortDocs(docs: DocumentWithCompliance[]): DocumentWithCompliance[] {
+    const priority: Record<string, number> = {
+        penalty_active: 0,
+        in_grace: 1,
+        expiring_soon: 2,
+        valid: 3,
+        incomplete: 4,
+    };
     return [...docs].sort((a, b) => {
-        const aIncomplete = isIncomplete(a);
-        const bIncomplete = isIncomplete(b);
-        if (aIncomplete && !bIncomplete) return 1;
-        if (!aIncomplete && bIncomplete) return -1;
-        if (aIncomplete && bIncomplete) return 0;
-
-        const aStatus = a.expiryDate ? getDocStatus(a.expiryDate) : null;
-        const bStatus = b.expiryDate ? getDocStatus(b.expiryDate) : null;
-        return (aStatus?.priority ?? 99) - (bStatus?.priority ?? 99);
+        const aPri = priority[a.status] ?? 99;
+        const bPri = priority[b.status] ?? 99;
+        if (aPri !== bPri) return aPri - bPri;
+        // Within same status, sort by nearest expiry
+        return (a.daysRemaining ?? 9999) - (b.daysRemaining ?? 9999);
     });
+}
+
+/** Format a date string to "10 Feb 2026" */
+function fmtDate(d?: string | null): string {
+    if (!d) return '—';
+    return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 export default function EmployeeDetailPage() {
@@ -62,6 +64,7 @@ export default function EmployeeDetailPage() {
 
     const [employee, setEmployee] = useState<EmployeeWithCompany | null>(null);
     const [documents, setDocuments] = useState<DocumentWithCompliance[]>([]);
+    const [dependencyAlerts, setDependencyAlerts] = useState<DependencyAlert[]>([]);
     const [loading, setLoading] = useState(true);
     const [deleting, setDeleting] = useState(false);
     const { isAdmin } = useUser();
@@ -74,10 +77,10 @@ export default function EmployeeDetailPage() {
     const [showBatchDeleteDocs, setShowBatchDeleteDocs] = useState(false);
     const [batchDeletingDocs, setBatchDeletingDocs] = useState(false);
 
-    const toggleDocSelect = (id: string) => {
+    const toggleDocSelect = (docId: string) => {
         setSelectedDocs(prev => {
             const next = new Set(prev);
-            if (next.has(id)) next.delete(id); else next.add(id);
+            if (next.has(docId)) next.delete(docId); else next.add(docId);
             return next;
         });
     };
@@ -115,6 +118,11 @@ export default function EmployeeDetailPage() {
             ]);
             setEmployee(empRes.data);
             setDocuments(docRes.data || []);
+
+            // Fetch dependency alerts (non-blocking)
+            api.employees.getDependencyAlerts(id)
+                .then(res => setDependencyAlerts(res.data || []))
+                .catch(() => { /* non-critical */ });
         } catch {
             toast.error('Failed to load employee details');
         } finally {
@@ -150,7 +158,7 @@ export default function EmployeeDetailPage() {
     if (loading) {
         return (
             <div className="flex justify-center py-20">
-                <Loader2 className="h-10 w-10 animate-spin text-blue-600" />
+                <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
             </div>
         );
     }
@@ -166,6 +174,11 @@ export default function EmployeeDetailPage() {
         );
     }
 
+    // Compute fine summary
+    const totalFine = documents.reduce((sum, d) => sum + (d.estimatedFine || 0), 0);
+    const inGraceCount = documents.filter(d => d.status === 'in_grace').length;
+    const penaltyCount = documents.filter(d => d.status === 'penalty_active').length;
+
     return (
         <div className="max-w-5xl mx-auto space-y-6">
             {/* Back button */}
@@ -174,7 +187,7 @@ export default function EmployeeDetailPage() {
             </Link>
 
             {/* Employee Info Card */}
-            <Card className="border-border/60">
+            <Card>
                 <CardContent className="pt-6">
                     <div className="flex flex-col sm:flex-row gap-6">
                         {/* Avatar */}
@@ -231,9 +244,9 @@ export default function EmployeeDetailPage() {
                 </CardContent>
             </Card>
 
-            {/* Profile Details Card — only if any optional field exists */}
+            {/* Profile Details Card */}
             {(employee.gender || employee.dateOfBirth || employee.nationality || employee.passportNumber || employee.nativeLocation || employee.currentLocation || employee.salary || employee.status) && (
-                <Card className="border-border/60">
+                <Card>
                     <CardContent className="pt-6">
                         <p className="text-sm font-medium text-muted-foreground mb-4">Profile Details</p>
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -289,7 +302,7 @@ export default function EmployeeDetailPage() {
                             {employee.status && (
                                 <div className="flex items-center gap-2 text-sm">
                                     <span className="text-muted-foreground">Status:</span>
-                                    <Badge variant="outline" className={employee.status === 'active' ? 'bg-green-100 dark:bg-green-950/40 text-green-800 dark:text-green-400' : employee.status === 'on_leave' ? 'bg-yellow-100 dark:bg-yellow-950/40 text-yellow-800 dark:text-yellow-400' : 'bg-red-100 dark:bg-red-950/40 text-red-800 dark:text-red-400'}>
+                                    <Badge variant="outline" className={EMP_STATUS_COLORS[employee.status] || ''}>
                                         {employee.status === 'on_leave' ? 'On Leave' : employee.status.charAt(0).toUpperCase() + employee.status.slice(1)}
                                     </Badge>
                                 </div>
@@ -299,35 +312,48 @@ export default function EmployeeDetailPage() {
                 </Card>
             )}
 
+            {/* Dependency Alerts */}
+            {dependencyAlerts.length > 0 && (
+                <div className="space-y-2">
+                    {dependencyAlerts.map((alert, i) => (
+                        <div
+                            key={i}
+                            className={`flex items-start gap-2.5 p-3 rounded-lg border text-sm ${
+                                alert.severity === 'critical'
+                                    ? 'border-red-200 dark:border-red-800 bg-red-50/50 dark:bg-red-950/20 text-red-800 dark:text-red-300'
+                                    : 'border-yellow-200 dark:border-yellow-800 bg-yellow-50/50 dark:bg-yellow-950/20 text-yellow-800 dark:text-yellow-300'
+                            }`}
+                        >
+                            <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                            <span>{alert.message}</span>
+                        </div>
+                    ))}
+                </div>
+            )}
+
             {/* Documents Section */}
-            <Card className="border-border/60">
+            <Card>
                 <CardHeader>
                     <div className="flex items-center justify-between">
                         <div>
-                            <CardTitle className="flex items-center gap-2"><FileText className="h-5 w-5" /> Documents</CardTitle>
+                            <CardTitle className="flex items-center gap-2 text-base"><FileText className="h-4 w-4" /> Documents</CardTitle>
                             <CardDescription>{documents.length} document{documents.length !== 1 ? 's' : ''}</CardDescription>
                         </div>
                         {isAdmin && (
-                            <div className="flex items-center gap-2">
-                                <Button size="sm" onClick={() => setShowAddDoc(true)}>
-                                    <Plus className="h-4 w-4 mr-1" /> Add Document
-                                </Button>
-                            </div>
+                            <Button size="sm" onClick={() => setShowAddDoc(true)}>
+                                <Plus className="h-4 w-4 mr-1" /> Add Document
+                            </Button>
                         )}
                     </div>
 
                     {/* Document selection toolbar */}
                     {isAdmin && selectedDocs.size > 0 && (
-                        <div className="mt-3 flex items-center gap-3 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg px-3 py-2">
-                            <button
-                                onClick={toggleDocSelectAll}
-                                className="h-4 w-4 rounded border-2 border-red-400 flex items-center justify-center flex-shrink-0 cursor-pointer"
-                            >
-                                {selectedDocs.size === documents.length && (
-                                    <CheckCircle className="h-3 w-3 text-red-500" />
-                                )}
-                            </button>
-                            <span className="text-sm font-medium text-red-700 dark:text-red-400">
+                        <div className="mt-3 flex items-center gap-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 rounded-lg px-3 py-2">
+                            <Checkbox
+                                checked={selectedDocs.size === documents.length}
+                                onCheckedChange={toggleDocSelectAll}
+                            />
+                            <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
                                 {selectedDocs.size} selected
                             </span>
                             <div className="flex-1" />
@@ -365,14 +391,38 @@ export default function EmployeeDetailPage() {
                                 </div>
                                 <div className="h-2 rounded-full bg-muted overflow-hidden">
                                     <div
-                                        className={`h-full rounded-full transition-all duration-500 ${pct === 100 ? 'bg-green-500' : pct >= 50 ? 'bg-yellow-500' : 'bg-red-500'
-                                            }`}
+                                        className={`h-full rounded-full transition-all duration-500 ${pct === 100 ? 'bg-green-500' : pct >= 50 ? 'bg-yellow-500' : 'bg-red-500'}`}
                                         style={{ width: `${pct}%` }}
                                     />
                                 </div>
                             </div>
                         );
                     })()}
+
+                    {/* Fine exposure summary */}
+                    {(totalFine > 0 || inGraceCount > 0) && (
+                        <div className="mt-3 p-3 rounded-lg border border-red-200 dark:border-red-800 bg-red-50/50 dark:bg-red-950/20">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <DollarSign className="h-4 w-4 text-red-500" />
+                                    <span className="text-sm font-medium text-foreground">Fine Exposure</span>
+                                </div>
+                                {totalFine > 0 && (
+                                    <span className="text-sm font-semibold text-red-600 dark:text-red-400">
+                                        AED {totalFine.toLocaleString('en', { maximumFractionDigits: 0 })}
+                                    </span>
+                                )}
+                            </div>
+                            <div className="flex gap-3 mt-1">
+                                {penaltyCount > 0 && (
+                                    <p className="text-xs text-red-600 dark:text-red-400">{penaltyCount} document{penaltyCount !== 1 ? 's' : ''} with active fines</p>
+                                )}
+                                {inGraceCount > 0 && (
+                                    <p className="text-xs text-orange-600 dark:text-orange-400">{inGraceCount} document{inGraceCount !== 1 ? 's' : ''} in grace period</p>
+                                )}
+                            </div>
+                        </div>
+                    )}
                 </CardHeader>
                 <CardContent>
                     {documents.length === 0 ? (
@@ -381,149 +431,158 @@ export default function EmployeeDetailPage() {
                             <p className="text-muted-foreground">No documents yet. Add one to start tracking.</p>
                         </div>
                     ) : (
-                        <div className="space-y-2">
+                        <div className="divide-y divide-border">
                             {sortDocs(documents).map((doc) => {
                                 const pending = isIncomplete(doc);
+                                const statusCfg = getStatusConfig(doc.status);
+                                const docName = doc.displayName || docDisplayName(doc.documentType, doc.metadata);
                                 const hasExpiry = !!doc.expiryDate;
-                                const status = hasExpiry ? getDocStatus(doc.expiryDate!) : null;
-                                const StatusIcon = status?.icon || FileText;
                                 const isPrimary = doc.isPrimary;
-                                const docName = doc.displayName || doc.documentType;
+                                const needsRenew = doc.status === 'expiring_soon' || doc.status === 'in_grace' || doc.status === 'penalty_active';
 
                                 return (
                                     <div
                                         key={doc.id}
-                                        className={`flex items-center justify-between p-3.5 rounded-lg border transition-shadow hover:shadow-sm ${selectedDocs.has(doc.id)
-                                            ? 'border-red-300 dark:border-red-800 bg-red-50/30 dark:bg-red-950/10'
-                                            : pending
-                                                ? 'border-dashed border-border/80 bg-muted/20 opacity-70'
-                                                : 'border-border/60'
-                                            }`}
+                                        className={`flex items-center justify-between py-3 gap-3 ${pending ? 'opacity-60' : ''}`}
                                     >
+                                        {/* Left: checkbox + doc info */}
                                         <div className="flex items-center gap-3 flex-1 min-w-0">
-                                            {/* Document checkbox (admin only) */}
                                             {isAdmin && (
-                                                <button
-                                                    onClick={() => toggleDocSelect(doc.id)}
-                                                    className={`h-4 w-4 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors cursor-pointer
-                                                        ${selectedDocs.has(doc.id)
-                                                            ? 'bg-red-500 border-red-500'
-                                                            : 'border-gray-300 dark:border-gray-600 hover:border-red-400'}
-                                                    `}
-                                                >
-                                                    {selectedDocs.has(doc.id) && (
-                                                        <svg className="h-2.5 w-2.5 text-white" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                                                    )}
-                                                </button>
+                                                <Checkbox
+                                                    checked={selectedDocs.has(doc.id)}
+                                                    onCheckedChange={() => toggleDocSelect(doc.id)}
+                                                />
                                             )}
-                                            <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${pending ? 'bg-muted text-muted-foreground' : status?.color || 'bg-muted text-muted-foreground'
-                                                }`}>
-                                                <StatusIcon className="h-4 w-4" />
-                                            </div>
                                             <div className="min-w-0">
                                                 <div className="flex items-center gap-2">
                                                     <h4 className="font-medium text-foreground text-sm">{docName}</h4>
-                                                    {isPrimary && (
-                                                        <Star className="h-3.5 w-3.5 text-amber-500 fill-amber-500 flex-shrink-0" />
+                                                    {isPrimary && <Star className="h-3.5 w-3.5 text-amber-500 fill-amber-500 flex-shrink-0" />}
+                                                    {doc.fileUrl && (
+                                                        <a
+                                                            href={doc.fileUrl.startsWith('http') ? doc.fileUrl : `${doc.fileUrl}`}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            className="text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                                                            title="View file"
+                                                            onClick={(e) => e.stopPropagation()}
+                                                        >
+                                                            <ExternalLink className="h-3 w-3" />
+                                                        </a>
                                                     )}
                                                 </div>
                                                 <p className="text-xs text-muted-foreground">
-                                                    {pending
-                                                        ? 'Not yet submitted'
-                                                        : hasExpiry
-                                                            ? `Expires: ${doc.expiryDate}`
-                                                            : 'No expiry date'}
+                                                    {pending ? (
+                                                        'Not yet submitted'
+                                                    ) : (
+                                                        <>
+                                                            {doc.documentNumber && <span>{doc.documentNumber} · </span>}
+                                                            {doc.issueDate && <span>Issued {fmtDate(doc.issueDate)} · </span>}
+                                                            {hasExpiry ? `Expires ${fmtDate(doc.expiryDate)}` : 'No expiry date'}
+                                                        </>
+                                                    )}
                                                 </p>
+                                                {/* Grace period info */}
+                                                {doc.status === 'in_grace' && doc.graceDaysRemaining != null && (
+                                                    <p className="text-xs text-orange-600 dark:text-orange-400 mt-0.5">
+                                                        Grace: {doc.graceDaysRemaining} day{doc.graceDaysRemaining !== 1 ? 's' : ''} remaining
+                                                    </p>
+                                                )}
+                                                {/* Fine info */}
+                                                {doc.status === 'penalty_active' && doc.estimatedFine > 0 && (
+                                                    <p className="text-xs text-red-600 dark:text-red-400 font-medium mt-0.5">
+                                                        Fine: AED {doc.estimatedFine.toLocaleString('en', { maximumFractionDigits: 0 })}
+                                                        {doc.daysInPenalty != null && ` (${doc.daysInPenalty} day${doc.daysInPenalty !== 1 ? 's' : ''} in penalty)`}
+                                                    </p>
+                                                )}
                                             </div>
                                         </div>
 
-                                        <div className="flex items-center gap-2 ml-3">
+                                        {/* Right: status + actions */}
+                                        <div className="flex items-center gap-2 ml-auto flex-shrink-0">
                                             {/* Days countdown */}
-                                            {!pending && hasExpiry && status && (
-                                                <div className="text-right hidden sm:block">
-                                                    <div className={`text-base font-bold ${status.days < 0 ? 'text-red-600' : status.days <= 7 ? 'text-orange-600' : status.days <= 30 ? 'text-yellow-600' : 'text-green-600'}`}>
-                                                        {Math.abs(status.days)}
+                                            {!pending && hasExpiry && doc.daysRemaining != null && (
+                                                <div className="text-right hidden sm:block min-w-[48px]">
+                                                    <div className={`text-base font-bold ${statusCfg.text}`}>
+                                                        {Math.abs(doc.daysRemaining)}
                                                     </div>
                                                     <div className="text-[10px] text-muted-foreground leading-tight">
-                                                        {status.days < 0 ? 'overdue' : 'days left'}
+                                                        {doc.daysRemaining < 0 ? 'overdue' : 'days left'}
                                                     </div>
                                                 </div>
                                             )}
 
                                             {/* Status badge */}
-                                            <Badge variant="outline" className={`text-xs ${pending
+                                            <Badge variant="outline" className={`text-xs whitespace-nowrap ${pending
                                                 ? 'bg-muted text-muted-foreground border-border'
-                                                : status?.color || 'bg-muted text-muted-foreground border-border'
-                                                }`}>
-                                                {pending ? 'Pending' : status?.label || 'No Expiry'}
+                                                : statusCfg.badge
+                                            }`}>
+                                                {pending ? 'Pending' : statusCfg.label}
                                             </Badge>
 
-                                            {/* Admin Actions */}
+                                            {/* Admin actions */}
                                             {isAdmin && (
-                                                <>
-                                                    {/* Toggle primary */}
-                                                    {hasExpiry && (
+                                                <div className="flex items-center gap-1">
+                                                    {/* Inline Renew button for docs needing attention */}
+                                                    {needsRenew && (
                                                         <Button
-                                                            variant="ghost"
-                                                            size="icon"
-                                                            title={isPrimary ? 'Unset as tracked document' : 'Set as tracked document'}
-                                                            className={`h-7 w-7 ${isPrimary ? 'text-amber-500' : 'text-muted-foreground hover:text-amber-500'}`}
-                                                            onClick={async () => {
-                                                                try {
-                                                                    await api.documents.togglePrimary(doc.id);
-                                                                    toast.success(isPrimary ? 'Unset as tracked' : 'Set as tracked document');
-                                                                    fetchEmployee();
-                                                                } catch {
-                                                                    toast.error('Failed to toggle');
-                                                                }
-                                                            }}
-                                                        >
-                                                            <Star className={`h-3.5 w-3.5 ${isPrimary ? 'fill-current' : ''}`} />
-                                                        </Button>
-                                                    )}
-
-                                                    {/* Renew */}
-                                                    {hasExpiry && (
-                                                        <Button
-                                                            variant="ghost" size="icon"
-                                                            title="Renew Document"
-                                                            className="h-7 w-7 text-muted-foreground hover:text-blue-600"
+                                                            variant="outline" size="sm"
+                                                            className="h-7 text-xs gap-1"
                                                             onClick={() => setRenewingDoc(doc)}
                                                         >
-                                                            <RefreshCw className="h-3.5 w-3.5" />
+                                                            <RefreshCw className="h-3 w-3" /> Renew
                                                         </Button>
                                                     )}
 
-                                                    {/* Edit */}
                                                     <Button
                                                         variant="ghost" size="icon"
                                                         className="h-7 w-7 text-muted-foreground hover:text-foreground"
                                                         onClick={() => setEditingDoc(doc)}
+                                                        title="Edit"
                                                     >
                                                         <Pencil className="h-3.5 w-3.5" />
                                                     </Button>
 
-                                                    {/* Delete */}
-                                                    <AlertDialog>
-                                                        <AlertDialogTrigger asChild>
-                                                            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-red-600 dark:hover:text-red-400">
-                                                                <Trash2 className="h-3.5 w-3.5" />
+                                                    <DropdownMenu>
+                                                        <DropdownMenuTrigger asChild>
+                                                            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground">
+                                                                <MoreHorizontal className="h-3.5 w-3.5" />
                                                             </Button>
-                                                        </AlertDialogTrigger>
-                                                        <AlertDialogContent>
-                                                            <AlertDialogHeader>
-                                                                <AlertDialogTitle>Delete {docName}?</AlertDialogTitle>
-                                                                <AlertDialogDescription>This will permanently delete this document record.</AlertDialogDescription>
-                                                            </AlertDialogHeader>
-                                                            <AlertDialogFooter>
-                                                                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                                                <AlertDialogAction onClick={() => handleDeleteDocument(doc.id)} className="bg-red-600 hover:bg-red-700">
-                                                                    Delete
-                                                                </AlertDialogAction>
-                                                            </AlertDialogFooter>
-                                                        </AlertDialogContent>
-                                                    </AlertDialog>
-                                                </>
+                                                        </DropdownMenuTrigger>
+                                                        <DropdownMenuContent align="end">
+                                                            {hasExpiry && (
+                                                                <DropdownMenuItem onClick={async () => {
+                                                                    try {
+                                                                        await api.documents.togglePrimary(doc.id);
+                                                                        toast.success(isPrimary ? 'Unset as tracked' : 'Set as tracked document');
+                                                                        fetchEmployee();
+                                                                    } catch {
+                                                                        toast.error('Failed to toggle');
+                                                                    }
+                                                                }}>
+                                                                    <Star className="h-3.5 w-3.5 mr-2" />
+                                                                    {isPrimary ? 'Unset as tracked' : 'Set as tracked'}
+                                                                </DropdownMenuItem>
+                                                            )}
+                                                            {hasExpiry && !needsRenew && (
+                                                                <DropdownMenuItem onClick={() => setRenewingDoc(doc)}>
+                                                                    <RefreshCw className="h-3.5 w-3.5 mr-2" />
+                                                                    Renew
+                                                                </DropdownMenuItem>
+                                                            )}
+                                                            <DropdownMenuItem
+                                                                className="text-red-600 dark:text-red-400"
+                                                                onClick={() => {
+                                                                    if (confirm(`Delete ${docName}? This cannot be undone.`)) {
+                                                                        handleDeleteDocument(doc.id);
+                                                                    }
+                                                                }}
+                                                            >
+                                                                <Trash2 className="h-3.5 w-3.5 mr-2" />
+                                                                Delete
+                                                            </DropdownMenuItem>
+                                                        </DropdownMenuContent>
+                                                    </DropdownMenu>
+                                                </div>
                                             )}
                                         </div>
                                     </div>
@@ -534,12 +593,26 @@ export default function EmployeeDetailPage() {
                 </CardContent>
             </Card>
 
+            {/* Document Timeline */}
+            {documents.some(d => d.expiryDate && d.status !== 'incomplete') && (
+                <Card>
+                    <CardHeader>
+                        <CardTitle className="text-base">Document Timeline</CardTitle>
+                        <CardDescription>Expiry overview — sorted by nearest deadline</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <DocumentTimeline documents={documents} />
+                    </CardContent>
+                </Card>
+            )}
+
             {/* Add Document Dialog */}
             <AddDocumentDialog
                 employeeId={id}
                 open={showAddDoc}
                 onOpenChange={setShowAddDoc}
                 onSuccess={fetchEmployee}
+                employee={employee}
             />
 
             {/* Edit Document Dialog */}
@@ -561,6 +634,7 @@ export default function EmployeeDetailPage() {
                     onSuccess={fetchEmployee}
                 />
             )}
+
             {/* Batch delete documents confirmation */}
             <AlertDialog open={showBatchDeleteDocs} onOpenChange={setShowBatchDeleteDocs}>
                 <AlertDialogContent>

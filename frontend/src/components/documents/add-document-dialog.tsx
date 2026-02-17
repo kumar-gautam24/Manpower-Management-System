@@ -1,69 +1,111 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import {
     Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Loader2, Upload, FileText, Image, X } from 'lucide-react';
+import {
+    Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import { Loader2, Upload, FileText, Image, X, ChevronDown, ChevronUp } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
-import type { Document, DocumentWithCompliance } from '@/types';
+import {
+    DOC_TYPES, docDisplayName, getDocTypeConfig,
+    type DocTypeKey, type MetadataFieldDef,
+} from '@/lib/constants';
+import type { Document, DocumentWithCompliance, EmployeeWithCompany } from '@/types';
 
-const DOCUMENT_TYPES = [
-    'Visa', 'Passport', 'Emirates ID', 'Labor Card',
-    'Medical Insurance', 'Work Permit', 'Trade License', 'Other',
-];
+/** All selectable types for chip selector */
+const SELECTABLE_TYPES = Object.entries(DOC_TYPES).map(([key, display]) => ({ key, display }));
 
-/** Map snake_case backend type → display name for chip matching */
-const DOC_TYPE_DISPLAY: Record<string, string> = {
-    passport: 'Passport',
-    visa: 'Visa',
-    emirates_id: 'Emirates ID',
-    work_permit: 'Work Permit',
-    health_insurance: 'Medical Insurance',
-    iloe_insurance: 'Other',
-    medical_fitness: 'Other',
-    labor_card: 'Labor Card',
-};
+// ── Shared helpers ──────────────────────────────────────────────
 
-/** Reverse map: display name → snake_case */
-const DOC_TYPE_TO_SNAKE: Record<string, string> = {
-    Passport: 'passport',
-    Visa: 'visa',
-    'Emirates ID': 'emirates_id',
-    'Work Permit': 'work_permit',
-    'Medical Insurance': 'health_insurance',
-    'Labor Card': 'labor_card',
-    'Trade License': 'trade_license',
-};
+function renderMetadataField(
+    field: MetadataFieldDef,
+    value: unknown,
+    onChange: (key: string, val: unknown) => void,
+) {
+    const strValue = value != null ? String(value) : '';
+
+    if (field.type === 'select' && field.options) {
+        return (
+            <Select value={strValue} onValueChange={(v) => onChange(field.key, v)}>
+                <SelectTrigger><SelectValue placeholder={`Select ${field.label.toLowerCase()}...`} /></SelectTrigger>
+                <SelectContent>
+                    {field.options.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                    ))}
+                </SelectContent>
+            </Select>
+        );
+    }
+
+    return (
+        <Input
+            type={field.type === 'number' ? 'number' : field.type === 'date' ? 'date' : 'text'}
+            placeholder={field.placeholder}
+            value={strValue}
+            onChange={(e) => onChange(field.key, field.type === 'number' ? (e.target.value ? Number(e.target.value) : '') : e.target.value)}
+        />
+    );
+}
+
+// ── Add Document Dialog ─────────────────────────────────────────
 
 interface AddDocumentDialogProps {
     employeeId: string;
     open: boolean;
     onOpenChange: (open: boolean) => void;
     onSuccess: () => void;
+    preselectedType?: string;
+    employee?: EmployeeWithCompany;
 }
 
-export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess }: AddDocumentDialogProps) {
-    const [documentType, setDocumentType] = useState('');
-    const [customType, setCustomType] = useState('');
+export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess, preselectedType, employee }: AddDocumentDialogProps) {
+    const [documentType, setDocumentType] = useState(preselectedType || '');
+    const [documentNumber, setDocumentNumber] = useState('');
+    const [issueDate, setIssueDate] = useState('');
     const [expiryDate, setExpiryDate] = useState('');
+    const [gracePeriodDays, setGracePeriodDays] = useState(0);
+    const [finePerDay, setFinePerDay] = useState(0);
+    const [fineType, setFineType] = useState<string>('daily');
+    const [fineCap, setFineCap] = useState(0);
+    const [metadata, setMetadata] = useState<Record<string, unknown>>({});
+    const [showAdvanced, setShowAdvanced] = useState(false);
     const [file, setFile] = useState<File | null>(null);
     const [uploading, setUploading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const selectedType = documentType === 'Other' ? customType : documentType;
+    const config = getDocTypeConfig(documentType);
+
+    // When type changes, auto-fill defaults
+    useEffect(() => {
+        if (!documentType) return;
+        const cfg = getDocTypeConfig(documentType);
+        setGracePeriodDays(cfg.defaultGraceDays);
+        setFinePerDay(cfg.defaultFinePerDay);
+        setFineType(cfg.defaultFineType);
+        setFineCap(cfg.defaultFineCap);
+
+        // Auto-fill metadata from employee context
+        const autoMeta: Record<string, unknown> = {};
+        for (const field of cfg.metadataFields) {
+            if (field.key === 'nationality' && employee?.nationality) autoMeta.nationality = employee.nationality;
+            if (field.key === 'sponsor' && employee?.companyName) autoMeta.sponsor = employee.companyName;
+            if (field.key === 'job_title' && employee?.trade) autoMeta.job_title = employee.trade;
+            if (field.key === 'linked_passport' && employee?.passportNumber) autoMeta.linked_passport = employee.passportNumber;
+        }
+        setMetadata(autoMeta);
+    }, [documentType, employee]);
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const selected = e.target.files?.[0];
         if (selected) {
-            if (selected.size > 10 * 1024 * 1024) {
-                toast.error('File too large. Maximum 10MB.');
-                return;
-            }
+            if (selected.size > 10 * 1024 * 1024) { toast.error('File too large. Maximum 10MB.'); return; }
             setFile(selected);
         }
     };
@@ -72,45 +114,37 @@ export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess }:
         e.preventDefault();
         const dropped = e.dataTransfer.files[0];
         if (dropped) {
-            if (dropped.size > 10 * 1024 * 1024) {
-                toast.error('File too large. Maximum 10MB.');
-                return;
-            }
+            if (dropped.size > 10 * 1024 * 1024) { toast.error('File too large. Maximum 10MB.'); return; }
             setFile(dropped);
         }
     }, []);
 
+    const updateMetadata = (key: string, val: unknown) => {
+        setMetadata((prev) => ({ ...prev, [key]: val }));
+    };
+
     const handleSubmit = async () => {
-        if (!selectedType) return;
+        if (!documentType) return;
         setUploading(true);
 
         try {
-            // Upload file first (if selected)
-            let fileData = {
-                fileUrl: '',
-                fileName: '',
-                fileSize: 0,
-                fileType: '',
-            };
-
+            let fileData = { fileUrl: '', fileName: '', fileSize: 0, fileType: '' };
             if (file) {
                 const uploaded = await api.upload(file, 'documents');
-                fileData = {
-                    fileUrl: uploaded.url,
-                    fileName: uploaded.fileName,
-                    fileSize: uploaded.fileSize,
-                    fileType: uploaded.fileType,
-                };
+                fileData = { fileUrl: uploaded.url, fileName: uploaded.fileName, fileSize: uploaded.fileSize, fileType: uploaded.fileType };
             }
 
-            // Create document record
             await api.documents.create(employeeId, {
-                documentType: DOC_TYPE_TO_SNAKE[selectedType] || selectedType,
+                documentType,
+                documentNumber: documentNumber || undefined,
+                issueDate: issueDate || undefined,
                 expiryDate: expiryDate || undefined,
-                fileUrl: fileData.fileUrl,
-                fileName: fileData.fileName,
-                fileSize: fileData.fileSize,
-                fileType: fileData.fileType,
+                gracePeriodDays,
+                finePerDay,
+                fineType,
+                fineCap,
+                metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+                ...fileData,
             });
 
             toast.success('Document added successfully');
@@ -125,106 +159,206 @@ export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess }:
     };
 
     const resetForm = () => {
-        setDocumentType('');
-        setCustomType('');
+        setDocumentType(preselectedType || '');
+        setDocumentNumber('');
+        setIssueDate('');
         setExpiryDate('');
+        setGracePeriodDays(0);
+        setFinePerDay(0);
+        setFineType('daily');
+        setFineCap(0);
+        setMetadata({});
+        setShowAdvanced(false);
         setFile(null);
     };
 
-    const fileIcon = file?.type.startsWith('image/') ? Image : FileText;
-    const FileIcon = fileIcon;
+    const FileIcon = file?.type.startsWith('image/') ? Image : FileText;
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-md">
+            <DialogContent className="sm:max-w-lg">
                 <DialogHeader>
                     <DialogTitle>Add Document</DialogTitle>
-                    <DialogDescription>Upload a document and optionally set its expiry date.</DialogDescription>
+                    <DialogDescription>Add a document with its details and optionally upload a file.</DialogDescription>
                 </DialogHeader>
 
-                <div className="space-y-4 py-2">
-                    {/* Document Type Selection */}
+                <div className="max-h-[70vh] overflow-y-auto space-y-4 py-2 pr-1">
+                    {/* ── Document Type — Chip Selector ── */}
                     <div className="space-y-2">
                         <Label>Document Type</Label>
-                        <div className="flex flex-wrap gap-2">
-                            {DOCUMENT_TYPES.map((type) => (
-                                <button
-                                    key={type}
-                                    onClick={() => setDocumentType(type)}
-                                    className={`px-3 py-1.5 rounded-full text-sm font-medium border transition-colors
-                    ${documentType === type
-                                            ? 'bg-blue-600 text-white border-blue-600'
-                                            : 'bg-background text-foreground border-border hover:border-blue-300 dark:hover:border-blue-700'
-                                        }`}
-                                >
-                                    {type}
-                                </button>
-                            ))}
-                        </div>
-                        {documentType === 'Other' && (
-                            <Input
-                                placeholder="Enter document type..."
-                                value={customType}
-                                onChange={(e) => setCustomType(e.target.value)}
-                                className="mt-2"
-                            />
-                        )}
-                    </div>
-
-                    {/* Expiry Date */}
-                    <div className="space-y-2">
-                        <Label htmlFor="expiry">Expiry Date <span className="text-muted-foreground font-normal">(optional)</span></Label>
-                        <Input
-                            id="expiry"
-                            type="date"
-                            value={expiryDate}
-                            onChange={(e) => setExpiryDate(e.target.value)}
-                        />
-                    </div>
-
-                    {/* File Upload */}
-                    <div className="space-y-2">
-                        <Label>File (optional)</Label>
-                        {file ? (
-                            <div className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/30">
-                                <FileIcon className="h-8 w-8 text-blue-600 dark:text-blue-400 flex-shrink-0" />
-                                <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-medium truncate">{file.name}</p>
-                                    <p className="text-xs text-muted-foreground">
-                                        {(file.size / 1024 / 1024).toFixed(2)} MB
-                                    </p>
-                                </div>
-                                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setFile(null)}>
-                                    <X className="h-4 w-4" />
-                                </Button>
-                            </div>
+                        {preselectedType ? (
+                            <p className="text-sm font-medium text-foreground px-3 py-1.5 rounded-lg bg-muted border border-border inline-block">
+                                {docDisplayName(preselectedType)}
+                            </p>
                         ) : (
-                            <div
-                                onDrop={handleDrop}
-                                onDragOver={(e) => e.preventDefault()}
-                                onClick={() => fileInputRef.current?.click()}
-                                className="flex flex-col items-center gap-2 p-6 rounded-lg border-2 border-dashed border-border cursor-pointer
-                  hover:border-blue-400 dark:hover:border-blue-600 hover:bg-blue-50/50 dark:hover:bg-blue-950/20 transition-colors"
-                            >
-                                <Upload className="h-6 w-6 text-muted-foreground" />
-                                <p className="text-sm text-muted-foreground">
-                                    Click or drag & drop (PDF, JPG, PNG — max 10MB)
-                                </p>
+                            <div className="flex flex-wrap gap-2">
+                                {SELECTABLE_TYPES.map(({ key, display }) => (
+                                    <button
+                                        key={key}
+                                        type="button"
+                                        onClick={() => setDocumentType(key)}
+                                        className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
+                                            documentType === key
+                                                ? 'bg-blue-600 text-white border-blue-600'
+                                                : 'bg-muted border-border text-muted-foreground hover:border-blue-400 dark:hover:border-blue-600'
+                                        }`}
+                                    >
+                                        {display}
+                                    </button>
+                                ))}
                             </div>
                         )}
-                        <input
-                            ref={fileInputRef}
-                            type="file"
-                            accept=".pdf,.jpg,.jpeg,.png"
-                            onChange={handleFileChange}
-                            className="hidden"
-                        />
                     </div>
+
+                    {/* ── Fields shown after type is selected ── */}
+                    {documentType && (
+                        <>
+                            {/* Custom name for "Other" type */}
+                            {documentType === 'other' && (
+                                <div className="space-y-2">
+                                    <Label>Document Name <span className="text-red-500">*</span></Label>
+                                    <Input
+                                        placeholder="e.g. Certificate of Good Conduct"
+                                        value={String(metadata.custom_name || '')}
+                                        onChange={(e) => updateMetadata('custom_name', e.target.value)}
+                                    />
+                                </div>
+                            )}
+
+                            {/* Document Number */}
+                            <div className="space-y-2">
+                                <Label>{config.numberLabel}</Label>
+                                <Input
+                                    placeholder={config.numberPlaceholder}
+                                    value={documentNumber}
+                                    onChange={(e) => setDocumentNumber(e.target.value)}
+                                />
+                            </div>
+
+                            {/* Issue Date */}
+                            <div className="space-y-2">
+                                <Label>Issue Date <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                                <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
+                            </div>
+
+                            {/* Expiry / Renewal Date */}
+                            <div className="space-y-2">
+                                {/* TODO: consider adding min={today} to prevent past dates in production */}
+                                <Label>{config.expiryLabel} <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                                <Input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} />
+                            </div>
+
+                            {/* Grace Period */}
+                            <div className="space-y-2">
+                                <Label>Grace Period (days)</Label>
+                                <Input
+                                    type="number"
+                                    min={0}
+                                    value={gracePeriodDays}
+                                    onChange={(e) => setGracePeriodDays(parseInt(e.target.value) || 0)}
+                                />
+                                {config.defaultGraceDays > 0 && (
+                                    <p className="text-xs text-muted-foreground">
+                                        UAE default for {DOC_TYPES[documentType as DocTypeKey] || documentType}: {config.defaultGraceDays} days
+                                    </p>
+                                )}
+                            </div>
+
+                            {/* Type-specific metadata fields */}
+                            {config.metadataFields
+                                .filter((f) => f.key !== 'custom_name')
+                                .map((field) => (
+                                    <div key={field.key} className="space-y-2">
+                                        <Label>
+                                            {field.label}
+                                            {field.required && <span className="text-red-500"> *</span>}
+                                        </Label>
+                                        {renderMetadataField(field, metadata[field.key], updateMetadata)}
+                                    </div>
+                                ))}
+
+                            {/* ── Advanced: Fine Configuration ── */}
+                            <button
+                                type="button"
+                                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                                onClick={() => setShowAdvanced(!showAdvanced)}
+                            >
+                                {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                                Fine Configuration
+                            </button>
+
+                            {showAdvanced && (
+                                <div className="grid grid-cols-3 gap-3 p-3 rounded-lg border border-border bg-muted/30">
+                                    <div className="space-y-1">
+                                        <Label className="text-xs">Fine Rate (AED)</Label>
+                                        <Input
+                                            type="number"
+                                            min={0}
+                                            step="0.01"
+                                            value={finePerDay}
+                                            onChange={(e) => setFinePerDay(parseFloat(e.target.value) || 0)}
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <Label className="text-xs">Fine Type</Label>
+                                        <Select value={fineType} onValueChange={setFineType}>
+                                            <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="daily">Per Day</SelectItem>
+                                                <SelectItem value="monthly">Per Month</SelectItem>
+                                                <SelectItem value="one_time">One-time</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <Label className="text-xs">Cap (AED)</Label>
+                                        <Input
+                                            type="number"
+                                            min={0}
+                                            step="0.01"
+                                            value={fineCap}
+                                            onChange={(e) => setFineCap(parseFloat(e.target.value) || 0)}
+                                            placeholder="0 = no cap"
+                                        />
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* ── File Upload ── */}
+                            <div className="space-y-2">
+                                <Label>File <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                                {file ? (
+                                    <div className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/30">
+                                        <FileIcon className="h-8 w-8 text-blue-600 dark:text-blue-400 flex-shrink-0" />
+                                        <div className="flex-1 min-w-0">
+                                            <p className="text-sm font-medium truncate">{file.name}</p>
+                                            <p className="text-xs text-muted-foreground">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
+                                        </div>
+                                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setFile(null)}>
+                                            <X className="h-4 w-4" />
+                                        </Button>
+                                    </div>
+                                ) : (
+                                    <div
+                                        onDrop={handleDrop}
+                                        onDragOver={(e) => e.preventDefault()}
+                                        onClick={() => fileInputRef.current?.click()}
+                                        className="flex flex-col items-center gap-2 p-6 rounded-lg border-2 border-dashed border-border cursor-pointer
+                                            hover:border-blue-400 dark:hover:border-blue-600 hover:bg-blue-50/50 dark:hover:bg-blue-950/20 transition-colors"
+                                    >
+                                        <Upload className="h-6 w-6 text-muted-foreground" />
+                                        <p className="text-sm text-muted-foreground">Click or drag & drop (PDF, JPG, PNG — max 10MB)</p>
+                                    </div>
+                                )}
+                                <input ref={fileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={handleFileChange} className="hidden" />
+                            </div>
+                        </>
+                    )}
                 </div>
 
                 <DialogFooter>
                     <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-                    <Button onClick={handleSubmit} disabled={uploading || !selectedType}>
+                    <Button onClick={handleSubmit} disabled={uploading || !documentType}>
                         {uploading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
                         {uploading ? 'Uploading...' : 'Add Document'}
                     </Button>
@@ -234,7 +368,7 @@ export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess }:
     );
 }
 
-// ── Edit Document Dialog ──────────────────────────────────────
+// ── Edit Document Dialog ────────────────────────────────────────
 
 interface EditDocumentDialogProps {
     document: Document | DocumentWithCompliance;
@@ -244,34 +378,48 @@ interface EditDocumentDialogProps {
 }
 
 export function EditDocumentDialog({ document, open, onOpenChange, onSuccess }: EditDocumentDialogProps) {
-    const displayType = DOC_TYPE_DISPLAY[document.documentType] || document.documentType;
-    const [documentType, setDocumentType] = useState(displayType);
+    const [documentType, setDocumentType] = useState(document.documentType);
+    const [documentNumber, setDocumentNumber] = useState(document.documentNumber || '');
+    const [issueDate, setIssueDate] = useState(document.issueDate || '');
     const [expiryDate, setExpiryDate] = useState(document.expiryDate || '');
+    const [gracePeriodDays, setGracePeriodDays] = useState(document.gracePeriodDays || 0);
+    const [finePerDay, setFinePerDay] = useState(document.finePerDay || 0);
+    const [fineType, setFineType] = useState(document.fineType || 'daily');
+    const [fineCap, setFineCap] = useState(document.fineCap || 0);
+    const [metadata, setMetadata] = useState<Record<string, unknown>>(document.metadata || {});
+    const [showAdvanced, setShowAdvanced] = useState(false);
     const [file, setFile] = useState<File | null>(null);
-    const isMandatory = 'isMandatory' in document && document.isMandatory;
     const [saving, setSaving] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const isMandatory = 'isMandatory' in document && document.isMandatory;
+    const config = getDocTypeConfig(documentType);
+
+    const updateMetadata = (key: string, val: unknown) => {
+        setMetadata((prev) => ({ ...prev, [key]: val }));
+    };
 
     const handleSave = async () => {
         if (!documentType) return;
         setSaving(true);
 
         try {
-            // Upload new file if changed
             let fileData: Partial<{ fileUrl: string; fileName: string; fileSize: number; fileType: string }> = {};
             if (file) {
                 const uploaded = await api.upload(file, 'documents');
-                fileData = {
-                    fileUrl: uploaded.url,
-                    fileName: uploaded.fileName,
-                    fileSize: uploaded.fileSize,
-                    fileType: uploaded.fileType,
-                };
+                fileData = { fileUrl: uploaded.url, fileName: uploaded.fileName, fileSize: uploaded.fileSize, fileType: uploaded.fileType };
             }
 
             await api.documents.update(document.id, {
-                documentType: DOC_TYPE_TO_SNAKE[documentType] || documentType,
+                documentType,
+                documentNumber: documentNumber || undefined,
+                issueDate: issueDate || undefined,
                 expiryDate: expiryDate || undefined,
+                gracePeriodDays,
+                finePerDay,
+                fineType,
+                fineCap,
+                metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
                 ...fileData,
             });
 
@@ -287,52 +435,145 @@ export function EditDocumentDialog({ document, open, onOpenChange, onSuccess }: 
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-md">
+            <DialogContent className="sm:max-w-lg">
                 <DialogHeader>
                     <DialogTitle>Edit Document</DialogTitle>
-                    <DialogDescription>Update the document type, expiry date, or file.</DialogDescription>
+                    <DialogDescription>Update the document details, compliance settings, or file.</DialogDescription>
                 </DialogHeader>
 
-                <div className="space-y-4 py-2">
+                <div className="max-h-[70vh] overflow-y-auto space-y-4 py-2 pr-1">
                     {/* Document Type */}
                     <div className="space-y-2">
                         <Label>Document Type</Label>
                         {isMandatory ? (
-                            <p className="text-sm font-medium text-foreground px-3 py-1.5 rounded-full bg-muted border border-border inline-block">
-                                {displayType}
+                            <p className="text-sm font-medium text-foreground px-3 py-1.5 rounded-lg bg-muted border border-border inline-block">
+                                {docDisplayName(document.documentType, document.metadata)}
                             </p>
                         ) : (
                             <div className="flex flex-wrap gap-2">
-                                {DOCUMENT_TYPES.filter(t => t !== 'Other').map((type) => (
+                                {SELECTABLE_TYPES.map(({ key, display }) => (
                                     <button
-                                        key={type}
-                                        onClick={() => setDocumentType(type)}
-                                        className={`px-3 py-1.5 rounded-full text-sm font-medium border transition-colors
-                        ${documentType === type
+                                        key={key}
+                                        type="button"
+                                        onClick={() => setDocumentType(key)}
+                                        className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
+                                            documentType === key
                                                 ? 'bg-blue-600 text-white border-blue-600'
-                                                : 'bg-background text-foreground border-border hover:border-blue-300 dark:hover:border-blue-700'
-                                            }`}
+                                                : 'bg-muted border-border text-muted-foreground hover:border-blue-400 dark:hover:border-blue-600'
+                                        }`}
                                     >
-                                        {type}
+                                        {display}
                                     </button>
                                 ))}
                             </div>
                         )}
                     </div>
 
-                    {/* Expiry Date */}
+                    {/* Custom name for "Other" type */}
+                    {documentType === 'other' && (
+                        <div className="space-y-2">
+                            <Label>Document Name <span className="text-red-500">*</span></Label>
+                            <Input
+                                placeholder="e.g. Certificate of Good Conduct"
+                                value={String(metadata.custom_name || '')}
+                                onChange={(e) => updateMetadata('custom_name', e.target.value)}
+                            />
+                        </div>
+                    )}
+
+                    {/* Document Number */}
                     <div className="space-y-2">
-                        <Label>Expiry Date <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                        <Label>{config.numberLabel}</Label>
                         <Input
-                            type="date"
-                            value={expiryDate}
-                            onChange={(e) => setExpiryDate(e.target.value)}
+                            placeholder={config.numberPlaceholder}
+                            value={documentNumber}
+                            onChange={(e) => setDocumentNumber(e.target.value)}
                         />
                     </div>
 
+                    {/* Issue Date */}
+                    <div className="space-y-2">
+                        <Label>Issue Date <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                        <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
+                    </div>
+
+                    {/* Expiry / Renewal Date */}
+                    <div className="space-y-2">
+                        {/* TODO: consider adding min={today} to prevent past dates in production */}
+                        <Label>{config.expiryLabel} <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                        <Input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} />
+                    </div>
+
+                    {/* Grace Period */}
+                    <div className="space-y-2">
+                        <Label>Grace Period (days)</Label>
+                        <Input
+                            type="number"
+                            min={0}
+                            value={gracePeriodDays}
+                            onChange={(e) => setGracePeriodDays(parseInt(e.target.value) || 0)}
+                        />
+                    </div>
+
+                    {/* Type-specific metadata fields */}
+                    {config.metadataFields
+                        .filter((f) => f.key !== 'custom_name')
+                        .map((field) => (
+                            <div key={field.key} className="space-y-2">
+                                <Label>
+                                    {field.label}
+                                    {field.required && <span className="text-red-500"> *</span>}
+                                </Label>
+                                {renderMetadataField(field, metadata[field.key], updateMetadata)}
+                            </div>
+                        ))}
+
+                    {/* Advanced: Fine Configuration */}
+                    <button
+                        type="button"
+                        className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                        onClick={() => setShowAdvanced(!showAdvanced)}
+                    >
+                        {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                        Fine Configuration
+                    </button>
+
+                    {showAdvanced && (
+                        <div className="grid grid-cols-3 gap-3 p-3 rounded-lg border border-border bg-muted/30">
+                            <div className="space-y-1">
+                                <Label className="text-xs">Fine Rate (AED)</Label>
+                                <Input
+                                    type="number" min={0} step="0.01"
+                                    value={finePerDay}
+                                    onChange={(e) => setFinePerDay(parseFloat(e.target.value) || 0)}
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <Label className="text-xs">Fine Type</Label>
+                                <Select value={fineType} onValueChange={setFineType}>
+                                    <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="daily">Per Day</SelectItem>
+                                        <SelectItem value="monthly">Per Month</SelectItem>
+                                        <SelectItem value="one_time">One-time</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div className="space-y-1">
+                                <Label className="text-xs">Cap (AED)</Label>
+                                <Input
+                                    type="number" min={0} step="0.01"
+                                    value={fineCap}
+                                    onChange={(e) => setFineCap(parseFloat(e.target.value) || 0)}
+                                    placeholder="0 = no cap"
+                                />
+                            </div>
+                        </div>
+                    )}
+
                     {/* Replace File */}
                     <div className="space-y-2">
-                        <Label>Replace File (optional)</Label>
+                        <Label>Replace File <span className="text-muted-foreground font-normal">(optional)</span></Label>
                         {file ? (
                             <div className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/30">
                                 <FileText className="h-6 w-6 text-blue-600" />
@@ -342,21 +583,11 @@ export function EditDocumentDialog({ document, open, onOpenChange, onSuccess }: 
                                 </Button>
                             </div>
                         ) : (
-                            <Button
-                                variant="outline"
-                                className="w-full gap-2"
-                                onClick={() => fileInputRef.current?.click()}
-                            >
+                            <Button variant="outline" className="w-full gap-2" onClick={() => fileInputRef.current?.click()}>
                                 <Upload className="h-4 w-4" /> Choose New File
                             </Button>
                         )}
-                        <input
-                            ref={fileInputRef}
-                            type="file"
-                            accept=".pdf,.jpg,.jpeg,.png"
-                            onChange={(e) => setFile(e.target.files?.[0] || null)}
-                            className="hidden"
-                        />
+                        <input ref={fileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={(e) => setFile(e.target.files?.[0] || null)} className="hidden" />
                     </div>
                 </div>
 

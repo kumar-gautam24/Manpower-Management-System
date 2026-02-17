@@ -436,6 +436,7 @@ func (h *EmployeeHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		&emp.CompanyName, &emp.CompanyCurrency,
 		&emp.ComplianceStatus, &emp.NearestExpiryDays,
 		&emp.DocsComplete, &emp.DocsTotal, &emp.UrgentDocType,
+		&emp.ExpiredCount, &emp.ExpiringCount,
 	)
 	if err != nil {
 		log.Printf("Error fetching employee %s: %v", id, err)

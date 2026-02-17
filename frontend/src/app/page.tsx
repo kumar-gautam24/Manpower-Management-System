@@ -10,12 +10,13 @@ import {
   DollarSign,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { getStatusConfig, docDisplayName } from '@/lib/constants';
 import type { DashboardMetrics, ExpiryAlert, CompanySummary, ComplianceStats } from '@/types';
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts';
 
-// Chart color palette — consistent across light and dark mode
+// Chart color palette
 const CHART_COLORS = {
   valid: '#22c55e',
   expiring: '#eab308',
@@ -74,7 +75,7 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent>
             <p className="text-muted-foreground mb-4">{error}</p>
-            <Button onClick={() => window.location.reload()}>Retry</Button>
+            <Button onClick={fetchData}>Retry</Button>
           </CardContent>
         </Card>
       </div>
@@ -92,47 +93,39 @@ export default function DashboardPage() {
 
   const totalDocs = metrics.activeDocuments + metrics.expiringSoon + metrics.expired;
 
+  const metricCards = [
+    { label: 'Total Employees', value: metrics.totalEmployees, sub: 'Active workforce', icon: Users, href: '/employees' },
+    { label: 'Active Documents', value: metrics.activeDocuments, sub: 'Valid documents', icon: FileText, href: '/employees?status=active' },
+    { label: 'Expiring Soon', value: metrics.expiringSoon, sub: 'Within 30 days', icon: AlertTriangle, accent: metrics.expiringSoon > 0 ? 'text-yellow-600 dark:text-yellow-400' : '', href: '/employees?status=expiring' },
+    { label: 'Expired', value: metrics.expired, sub: 'Requires renewal', icon: XCircle, accent: metrics.expired > 0 ? 'text-red-600 dark:text-red-400' : '', href: '/employees?status=expired' },
+  ];
+
   return (
-    <div className="space-y-6 md:space-y-8">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Dashboard</h1>
+          <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
           <p className="text-muted-foreground mt-1 text-sm">Overview of your workforce and documents</p>
         </div>
         <Link href="/employees">
-          <Button className="w-full sm:w-auto gap-2">
+          <Button variant="outline" className="w-full sm:w-auto gap-2">
             <Users className="h-4 w-4" /> View Employees
           </Button>
         </Link>
       </div>
 
-      {/* Metric Cards — clickable for detail */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        {[
-          { label: 'Total Employees', value: metrics.totalEmployees, sub: 'Active workforce', icon: Users, border: 'border-l-blue-500', iconColor: 'text-blue-500', valueColor: '', href: '/employees' },
-          { label: 'Active Documents', value: metrics.activeDocuments, sub: 'Valid documents', icon: FileText, border: 'border-l-green-500', iconColor: 'text-green-500', valueColor: '', href: '/employees?status=active' },
-          { label: 'Expiring Soon', value: metrics.expiringSoon, sub: 'Within 30 days', icon: AlertTriangle, border: 'border-l-yellow-500', iconColor: 'text-yellow-500', valueColor: 'text-yellow-700 dark:text-yellow-400', href: '/employees?status=expiring' },
-          { label: 'Expired', value: metrics.expired, sub: 'Requires renewal', icon: XCircle, border: 'border-l-red-500', iconColor: 'text-red-500', valueColor: 'text-red-700 dark:text-red-400', href: '/employees?status=expired' },
-          {
-            label: 'Fine Exposure',
-            value: compliance ? `${compliance.totalAccumulated.toLocaleString('en', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : '0',
-            sub: compliance ? `${compliance.totalDailyFine.toFixed(0)} AED/day` : 'No fines',
-            icon: DollarSign,
-            border: 'border-l-purple-500',
-            iconColor: 'text-purple-500',
-            valueColor: 'text-purple-700 dark:text-purple-400',
-            href: '/employees?status=expired',
-          },
-        ].map((card) => (
+      {/* Metric Cards — 4 cards, clean neutral style. Only warning/error states get color. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {metricCards.map((card) => (
           <Link key={card.label} href={card.href}>
-            <Card className={`border-l-4 ${card.border} hover:shadow-lg hover:scale-[1.02] transition-all cursor-pointer border-border/60`}>
+            <Card className="hover:shadow-md transition-shadow cursor-pointer">
               <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
                 <CardTitle className="text-sm font-medium text-muted-foreground">{card.label}</CardTitle>
-                <card.icon className={`h-5 w-5 ${card.iconColor}`} />
+                <card.icon className={`h-4 w-4 ${card.accent || 'text-muted-foreground'}`} />
               </CardHeader>
               <CardContent>
-                <div className={`text-3xl font-bold ${card.valueColor || 'text-foreground'}`}>{card.value}</div>
+                <div className={`text-2xl font-semibold ${card.accent || 'text-foreground'}`}>{card.value}</div>
                 <p className="text-xs text-muted-foreground mt-1">{card.sub}</p>
               </CardContent>
             </Card>
@@ -140,13 +133,49 @@ export default function DashboardPage() {
         ))}
       </div>
 
+      {/* Fine Exposure — show when fines > 0 OR docs in grace */}
+      {compliance && (compliance.totalAccumulated > 0 || (compliance.documentsByStatus?.in_grace ?? 0) > 0) && (
+        <Card className="border-red-200 dark:border-red-800 bg-red-50/50 dark:bg-red-950/20">
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <DollarSign className="h-5 w-5 text-red-500" />
+                <div>
+                  <p className="text-sm font-medium text-foreground">Fine Exposure</p>
+                  <div className="flex gap-3 text-xs text-muted-foreground">
+                    {compliance.totalDailyFine > 0 && (
+                      <span>{compliance.totalDailyFine.toFixed(0)} AED/day accumulating</span>
+                    )}
+                    {(compliance.documentsByStatus?.in_grace ?? 0) > 0 && (
+                      <span className="text-orange-600 dark:text-orange-400">
+                        {compliance.documentsByStatus.in_grace} in grace period
+                      </span>
+                    )}
+                    {(compliance.documentsByStatus?.penalty_active ?? 0) > 0 && (
+                      <span className="text-red-600 dark:text-red-400">
+                        {compliance.documentsByStatus.penalty_active} with active fines
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+              {compliance.totalAccumulated > 0 && (
+                <div className="text-2xl font-semibold text-red-600 dark:text-red-400">
+                  {compliance.totalAccumulated.toLocaleString('en', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} AED
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Document Status Donut Chart */}
-        <Card className="border-border/60">
+        <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <TrendingUp className="h-5 w-5" /> Document Status
+            <CardTitle className="flex items-center gap-2 text-base">
+              <TrendingUp className="h-4 w-4" /> Document Status
             </CardTitle>
             <CardDescription>Distribution across all {totalDocs} documents</CardDescription>
           </CardHeader>
@@ -189,10 +218,10 @@ export default function DashboardPage() {
         </Card>
 
         {/* Employees per Company Bar Chart */}
-        <Card className="border-border/60">
+        <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Building2 className="h-5 w-5" /> Employees by Company
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Building2 className="h-4 w-4" /> Employees by Company
             </CardTitle>
             <CardDescription>Workforce distribution</CardDescription>
           </CardHeader>
@@ -232,10 +261,70 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* Expiry Alerts Table */}
-      <Card className="border-border/60">
+      {/* Company Compliance Breakdown */}
+      {compliance && compliance.companyBreakdown && compliance.companyBreakdown.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Building2 className="h-4 w-4" /> Company Compliance
+            </CardTitle>
+            <CardDescription>Per-company penalty and fine overview</CardDescription>
+          </CardHeader>
+          <CardContent className="px-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-muted-foreground">
+                    <th className="text-left font-medium px-6 py-2">Company</th>
+                    <th className="text-center font-medium px-3 py-2">Employees</th>
+                    <th className="text-center font-medium px-3 py-2">Penalties</th>
+                    <th className="text-center font-medium px-3 py-2">Incomplete</th>
+                    <th className="text-right font-medium px-3 py-2">Daily Exposure</th>
+                    <th className="text-right font-medium px-6 py-2">Accumulated</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {compliance.companyBreakdown.map((co) => (
+                    <tr key={co.companyId} className="hover:bg-muted/30 transition-colors">
+                      <td className="px-6 py-2.5 font-medium text-foreground">{co.companyName}</td>
+                      <td className="text-center px-3 py-2.5">{co.employeeCount}</td>
+                      <td className="text-center px-3 py-2.5">
+                        {co.penaltyCount > 0
+                          ? <span className="text-red-600 dark:text-red-400 font-medium">{co.penaltyCount}</span>
+                          : <span className="text-muted-foreground">0</span>
+                        }
+                      </td>
+                      <td className="text-center px-3 py-2.5">
+                        {co.incompleteCount > 0
+                          ? <span className="text-yellow-600 dark:text-yellow-400 font-medium">{co.incompleteCount}</span>
+                          : <span className="text-muted-foreground">0</span>
+                        }
+                      </td>
+                      <td className="text-right px-3 py-2.5">
+                        {co.dailyExposure > 0
+                          ? <span className="text-red-600 dark:text-red-400">{co.dailyExposure.toFixed(0)} AED</span>
+                          : <span className="text-muted-foreground">—</span>
+                        }
+                      </td>
+                      <td className="text-right px-6 py-2.5">
+                        {co.accumulatedFines > 0
+                          ? <span className="text-red-600 dark:text-red-400 font-semibold">{co.accumulatedFines.toLocaleString('en', { maximumFractionDigits: 0 })} AED</span>
+                          : <span className="text-muted-foreground">—</span>
+                        }
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Expiry Alerts — simple rows, no card-in-card */}
+      <Card>
         <CardHeader>
-          <CardTitle>Critical Expiry Alerts</CardTitle>
+          <CardTitle className="text-base">Critical Expiry Alerts</CardTitle>
           <CardDescription>
             {alerts.length > 0
               ? `${alerts.length} document${alerts.length !== 1 ? 's' : ''} expiring or expired`
@@ -243,55 +332,50 @@ export default function DashboardPage() {
           </CardDescription>
         </CardHeader>
         {alerts.length > 0 && (
-          <CardContent className="px-4 sm:px-6">
-            <div className="space-y-3">
-              {alerts.map((alert) => (
-                <Link key={alert.documentId} href={`/employees/${alert.employeeId}`}>
-                  <div className="flex items-center justify-between p-4 rounded-lg border border-border/60 hover:shadow-md transition-shadow cursor-pointer mb-3">
-                    <div className="flex-1 min-w-0 space-y-1">
-                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                        <h3 className="font-semibold text-foreground">{alert.employeeName}</h3>
-                        <Badge
-                          variant="outline"
-                          className={`w-fit ${alert.status === 'expired'
-                            ? 'bg-red-100 dark:bg-red-950/40 text-red-800 dark:text-red-400 border-red-200 dark:border-red-800'
-                            : alert.status === 'urgent'
-                              ? 'bg-orange-100 dark:bg-orange-950/40 text-orange-800 dark:text-orange-400 border-orange-200 dark:border-orange-800'
-                              : 'bg-yellow-100 dark:bg-yellow-950/40 text-yellow-800 dark:text-yellow-400 border-yellow-200 dark:border-yellow-800'
-                            }`}
-                        >
-                          {alert.status === 'expired' ? 'Expired' : alert.status === 'urgent' ? 'Urgent' : 'Warning'}
-                        </Badge>
+          <CardContent className="px-0">
+            <div className="divide-y divide-border">
+              {alerts.map((alert) => {
+                const statusCfg = getStatusConfig(alert.status);
+                return (
+                  <Link key={alert.documentId} href={`/employees/${alert.employeeId}`}>
+                    <div className="flex items-center justify-between px-6 py-3 hover:bg-muted/30 transition-colors cursor-pointer">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-sm text-foreground">{alert.employeeName}</span>
+                          <Badge variant="outline" className={`text-[11px] ${statusCfg.badge}`}>
+                            {statusCfg.label}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
+                          <span>{alert.companyName}</span>
+                          <span>·</span>
+                          <span>{docDisplayName(alert.documentType)}</span>
+                          <span className="hidden sm:inline">·</span>
+                          <span className="hidden sm:inline">Expires: {alert.expiryDate}</span>
+                        </div>
                       </div>
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
-                        <span className="flex items-center gap-1"><Building2 className="h-3 w-3" /> {alert.companyName}</span>
-                        <span>•</span>
-                        <span className="font-medium">{alert.documentType}</span>
-                        <span className="hidden sm:inline">•</span>
-                        <span className="hidden sm:inline text-xs">Expires: {alert.expiryDate}</span>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-4 ml-4">
-                      {alert.estimatedFine > 0 && (
-                        <div className="text-center">
-                          <div className="text-sm font-bold text-purple-600 dark:text-purple-400">
-                            {alert.estimatedFine.toLocaleString('en', { maximumFractionDigits: 0 })} AED
+                      <div className="flex items-center gap-4 ml-4">
+                        {alert.estimatedFine > 0 && (
+                          <div className="text-right">
+                            <div className="text-sm font-semibold text-red-600 dark:text-red-400">
+                              {alert.estimatedFine.toLocaleString('en', { maximumFractionDigits: 0 })} AED
+                            </div>
+                            <div className="text-[11px] text-muted-foreground">est. fine</div>
                           </div>
-                          <div className="text-xs text-muted-foreground">est. fine</div>
-                        </div>
-                      )}
-                      <div className="text-center">
-                        <div className={`text-2xl font-bold ${alert.daysLeft < 0 ? 'text-red-600' : alert.daysLeft <= 7 ? 'text-orange-600' : 'text-yellow-600'}`}>
-                          {Math.abs(alert.daysLeft)}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {alert.daysLeft < 0 ? 'days late' : 'days left'}
+                        )}
+                        <div className="text-center min-w-[48px]">
+                          <div className={`text-lg font-bold ${alert.daysLeft < 0 ? 'text-red-600' : alert.daysLeft <= 7 ? 'text-orange-600' : 'text-yellow-600'}`}>
+                            {Math.abs(alert.daysLeft)}
+                          </div>
+                          <div className="text-[11px] text-muted-foreground">
+                            {alert.daysLeft < 0 ? 'days late' : 'days left'}
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                </Link>
-              ))}
+                  </Link>
+                );
+              })}
             </div>
           </CardContent>
         )}

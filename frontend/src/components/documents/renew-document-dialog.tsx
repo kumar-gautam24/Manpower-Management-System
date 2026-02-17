@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Loader2, Upload, FileText, Image, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
+import { docDisplayName, getDocTypeConfig } from '@/lib/constants';
 import type { Document, DocumentWithCompliance } from '@/types';
 
 interface RenewDocumentDialogProps {
@@ -20,10 +21,13 @@ interface RenewDocumentDialogProps {
 }
 
 export function RenewDocumentDialog({ document, open, onOpenChange, onSuccess }: RenewDocumentDialogProps) {
+    const [documentNumber, setDocumentNumber] = useState(document.documentNumber || '');
+    const [issueDate, setIssueDate] = useState('');
     const [expiryDate, setExpiryDate] = useState('');
     const [file, setFile] = useState<File | null>(null);
     const [uploading, setUploading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const config = getDocTypeConfig(document.documentType);
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const selected = e.target.files?.[0];
@@ -72,6 +76,8 @@ export function RenewDocumentDialog({ document, open, onOpenChange, onSuccess }:
             // Call renew API
             await api.documents.renew(document.id, {
                 expiryDate,
+                documentNumber: documentNumber || undefined,
+                issueDate: issueDate || undefined,
                 ...fileData,
             });
 
@@ -87,6 +93,8 @@ export function RenewDocumentDialog({ document, open, onOpenChange, onSuccess }:
     };
 
     const resetForm = () => {
+        setDocumentNumber(document.documentNumber || '');
+        setIssueDate('');
         setExpiryDate('');
         setFile(null);
     };
@@ -98,16 +106,36 @@ export function RenewDocumentDialog({ document, open, onOpenChange, onSuccess }:
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className="sm:max-w-md">
                 <DialogHeader>
-                    <DialogTitle>Renew Document: {document.documentType}</DialogTitle>
+                    <DialogTitle>Renew {docDisplayName(document.documentType)}</DialogTitle>
                     <DialogDescription>
-                        Renewing sets this document as the active version. The old version will be archived.
+                        {document.expiryDate
+                            ? `Current expiry: ${new Date(document.expiryDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}. `
+                            : ''}
+                        The old version will be archived.
                     </DialogDescription>
                 </DialogHeader>
 
                 <div className="space-y-4 py-2">
-                    {/* Expiry Date */}
+                    {/* Document Number */}
                     <div className="space-y-2">
-                        <Label htmlFor="expiry">New Expiry Date <span className="text-red-500">*</span></Label>
+                        <Label>New {config.numberLabel} <span className="text-muted-foreground font-normal">(optional — keeps old)</span></Label>
+                        <Input
+                            placeholder={document.documentNumber || config.numberPlaceholder}
+                            value={documentNumber}
+                            onChange={(e) => setDocumentNumber(e.target.value)}
+                        />
+                    </div>
+
+                    {/* Issue Date */}
+                    <div className="space-y-2">
+                        <Label>New Issue Date <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                        <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
+                    </div>
+
+                    {/* Expiry Date */}
+                    {/* TODO: consider adding min={today} to prevent past dates in production */}
+                    <div className="space-y-2">
+                        <Label htmlFor="expiry">New {config.expiryLabel} <span className="text-red-500">*</span></Label>
                         <Input
                             id="expiry"
                             type="date"

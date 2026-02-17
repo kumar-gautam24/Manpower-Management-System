@@ -280,12 +280,26 @@ export default function CompaniesPage() {
                             </div>
                         </CardHeader>
                         <CardContent>
-                            <div className="flex items-center justify-between">
+                            <div className="space-y-2">
                                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                                     <Users className="h-4 w-4" />
                                     <span>{company.employeeCount} employee{company.employeeCount !== 1 ? 's' : ''}</span>
                                 </div>
-
+                                {(company.regulatoryAuthority || company.mohreCategory || company.tradeLicenseNumber) && (
+                                    <div className="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+                                        {company.regulatoryAuthority && (
+                                            <Badge variant="outline" className="text-[11px]">{company.regulatoryAuthority}</Badge>
+                                        )}
+                                        {company.mohreCategory && (
+                                            <Badge variant="outline" className="text-[11px]">Cat. {company.mohreCategory}</Badge>
+                                        )}
+                                        {company.tradeLicenseNumber && (
+                                            <span className="text-[11px]">TL: {company.tradeLicenseNumber}</span>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                            <div className="flex items-center justify-end mt-2">
                                 {isAdmin && (
                                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(company)}>
