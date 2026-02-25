@@ -44,8 +44,14 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(chimw.Logger)
 	r.Use(chimw.Recoverer)
+	// Build CORS allowed origins: includes localhost for dev + production URL from env
+	corsOrigins := []string{"http://localhost:3000", "http://localhost:3001"}
+	if frontendURL := os.Getenv("FRONTEND_URL"); frontendURL != "" {
+		corsOrigins = append(corsOrigins, frontendURL)
+	}
+
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:3000", "http://localhost:3001"},
+		AllowedOrigins:   corsOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
