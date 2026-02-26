@@ -82,8 +82,8 @@ func scanEmployeeWithCompany(scanner interface {
 // ── Create ─────────────────────────────────────────────────────
 
 // Create handles POST /api/employees
-// After inserting the employee, it auto-creates 7 mandatory document
-// slots so that compliance posture is immediately visible.
+// After inserting the employee, it auto-creates mandatory document
+// slots (from document_types table) so that compliance posture is immediately visible.
 func (h *EmployeeHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateEmployeeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -109,7 +109,7 @@ func (h *EmployeeHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	pool := h.db.GetPool()
 
-	// Use a transaction: insert employee + 7 mandatory doc slots
+	// Use a transaction: insert employee + mandatory doc slots
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		log.Printf("Error starting transaction: %v", err)
@@ -334,14 +334,17 @@ func (h *EmployeeHandler) List(w http.ResponseWriter, r *http.Request) {
 			SELECT
 				CASE
 					WHEN COUNT(*) = 0 THEN 'none'
-					WHEN COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date < CURRENT_DATE AND (expiry_date + grace_period_days * INTERVAL '1 day') < CURRENT_DATE) > 0 THEN 'penalty_active'
-					WHEN COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date < CURRENT_DATE AND (expiry_date + grace_period_days * INTERVAL '1 day') >= CURRENT_DATE) > 0 THEN 'in_grace'
-					WHEN COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL '30 days') > 0 THEN 'expiring_soon'
-					WHEN COUNT(*) FILTER (WHERE expiry_date IS NULL OR document_number IS NULL OR document_number = '') > 0 THEN 'incomplete'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') < CURRENT_DATE) > 0 THEN 'penalty_active'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') >= CURRENT_DATE) > 0 THEN 'in_grace'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date >= CURRENT_DATE AND d2.expiry_date <= CURRENT_DATE + INTERVAL '30 days') > 0 THEN 'expiring_soon'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NULL OR d2.document_number IS NULL OR d2.document_number = '') > 0 THEN 'incomplete'
 					ELSE 'valid'
 				END AS compliance_status
-			FROM documents
-			WHERE employee_id = e.id AND is_mandatory = TRUE
+			FROM documents d2
+			LEFT JOIN document_types dt2 ON dt2.doc_type = d2.document_type AND dt2.is_active = TRUE
+			LEFT JOIN compliance_rules cr2 ON cr2.doc_type = d2.document_type AND cr2.company_id = e.company_id
+			LEFT JOIN compliance_rules gr2 ON gr2.doc_type = d2.document_type AND gr2.company_id IS NULL
+			WHERE d2.employee_id = e.id AND COALESCE(dt2.is_mandatory, d2.is_mandatory) = TRUE
 		) ds ON TRUE
 		%s %s
 	`, where, statusFilter)
@@ -371,24 +374,28 @@ func (h *EmployeeHandler) List(w http.ResponseWriter, r *http.Request) {
 			SELECT
 				CASE
 					WHEN COUNT(*) = 0 THEN 'none'
-					WHEN COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date < CURRENT_DATE AND (expiry_date + grace_period_days * INTERVAL '1 day') < CURRENT_DATE) > 0 THEN 'penalty_active'
-					WHEN COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date < CURRENT_DATE AND (expiry_date + grace_period_days * INTERVAL '1 day') >= CURRENT_DATE) > 0 THEN 'in_grace'
-					WHEN COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL '30 days') > 0 THEN 'expiring_soon'
-					WHEN COUNT(*) FILTER (WHERE expiry_date IS NULL OR document_number IS NULL OR document_number = '') > 0 THEN 'incomplete'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') < CURRENT_DATE) > 0 THEN 'penalty_active'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') >= CURRENT_DATE) > 0 THEN 'in_grace'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date >= CURRENT_DATE AND d2.expiry_date <= CURRENT_DATE + INTERVAL '30 days') > 0 THEN 'expiring_soon'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NULL OR d2.document_number IS NULL OR d2.document_number = '') > 0 THEN 'incomplete'
 					ELSE 'valid'
 				END AS compliance_status,
-				MIN(expiry_date) - CURRENT_DATE AS nearest_expiry_days,
-				COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND document_number IS NOT NULL AND document_number != '')::int AS docs_complete,
+				MIN(d2.expiry_date) - CURRENT_DATE AS nearest_expiry_days,
+				COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.document_number IS NOT NULL AND d2.document_number != '')::int AS docs_complete,
 				COUNT(*)::int AS docs_total,
-				(SELECT document_type FROM documents
-				 WHERE employee_id = e.id AND is_mandatory = TRUE
-				   AND expiry_date IS NOT NULL
-				 ORDER BY expiry_date ASC LIMIT 1
+				(SELECT dd.document_type FROM documents dd
+				 LEFT JOIN document_types ddt ON ddt.doc_type = dd.document_type AND ddt.is_active = TRUE
+				 WHERE dd.employee_id = e.id AND COALESCE(ddt.is_mandatory, dd.is_mandatory) = TRUE
+				   AND dd.expiry_date IS NOT NULL
+				 ORDER BY dd.expiry_date ASC LIMIT 1
 				) AS urgent_doc_type,
-				COUNT(*) FILTER (WHERE expiry_date < CURRENT_DATE AND (expiry_date + grace_period_days * INTERVAL '1 day') < CURRENT_DATE)::int AS expired_count,
-				COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL '30 days')::int AS expiring_count
-			FROM documents
-			WHERE employee_id = e.id AND is_mandatory = TRUE
+				COUNT(*) FILTER (WHERE d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') < CURRENT_DATE)::int AS expired_count,
+				COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date >= CURRENT_DATE AND d2.expiry_date <= CURRENT_DATE + INTERVAL '30 days')::int AS expiring_count
+			FROM documents d2
+			LEFT JOIN document_types dt2 ON dt2.doc_type = d2.document_type AND dt2.is_active = TRUE
+			LEFT JOIN compliance_rules cr2 ON cr2.doc_type = d2.document_type AND cr2.company_id = e.company_id
+			LEFT JOIN compliance_rules gr2 ON gr2.doc_type = d2.document_type AND gr2.company_id IS NULL
+			WHERE d2.employee_id = e.id AND COALESCE(dt2.is_mandatory, d2.is_mandatory) = TRUE
 		) ds ON TRUE
 		%s %s
 		ORDER BY %s %s
@@ -461,24 +468,28 @@ func (h *EmployeeHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 			SELECT
 				CASE
 					WHEN COUNT(*) = 0 THEN 'none'
-					WHEN COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date < CURRENT_DATE AND (expiry_date + grace_period_days * INTERVAL '1 day') < CURRENT_DATE) > 0 THEN 'penalty_active'
-					WHEN COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date < CURRENT_DATE AND (expiry_date + grace_period_days * INTERVAL '1 day') >= CURRENT_DATE) > 0 THEN 'in_grace'
-					WHEN COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL '30 days') > 0 THEN 'expiring_soon'
-					WHEN COUNT(*) FILTER (WHERE expiry_date IS NULL OR document_number IS NULL OR document_number = '') > 0 THEN 'incomplete'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') < CURRENT_DATE) > 0 THEN 'penalty_active'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') >= CURRENT_DATE) > 0 THEN 'in_grace'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date >= CURRENT_DATE AND d2.expiry_date <= CURRENT_DATE + INTERVAL '30 days') > 0 THEN 'expiring_soon'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NULL OR d2.document_number IS NULL OR d2.document_number = '') > 0 THEN 'incomplete'
 					ELSE 'valid'
 				END AS compliance_status,
-				MIN(expiry_date) - CURRENT_DATE AS nearest_expiry_days,
-				COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND document_number IS NOT NULL AND document_number != '')::int AS docs_complete,
+				MIN(d2.expiry_date) - CURRENT_DATE AS nearest_expiry_days,
+				COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.document_number IS NOT NULL AND d2.document_number != '')::int AS docs_complete,
 				COUNT(*)::int AS docs_total,
-				(SELECT document_type FROM documents
-				 WHERE employee_id = e.id AND is_mandatory = TRUE
-				   AND expiry_date IS NOT NULL
-				 ORDER BY expiry_date ASC LIMIT 1
+				(SELECT dd.document_type FROM documents dd
+				 LEFT JOIN document_types ddt ON ddt.doc_type = dd.document_type AND ddt.is_active = TRUE
+				 WHERE dd.employee_id = e.id AND COALESCE(ddt.is_mandatory, dd.is_mandatory) = TRUE
+				   AND dd.expiry_date IS NOT NULL
+				 ORDER BY dd.expiry_date ASC LIMIT 1
 				) AS urgent_doc_type,
-				COUNT(*) FILTER (WHERE expiry_date < CURRENT_DATE AND (expiry_date + grace_period_days * INTERVAL '1 day') < CURRENT_DATE)::int AS expired_count,
-				COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL '30 days')::int AS expiring_count
-			FROM documents
-			WHERE employee_id = e.id AND is_mandatory = TRUE
+				COUNT(*) FILTER (WHERE d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') < CURRENT_DATE)::int AS expired_count,
+				COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date >= CURRENT_DATE AND d2.expiry_date <= CURRENT_DATE + INTERVAL '30 days')::int AS expiring_count
+			FROM documents d2
+			LEFT JOIN document_types dt2 ON dt2.doc_type = d2.document_type AND dt2.is_active = TRUE
+			LEFT JOIN compliance_rules cr2 ON cr2.doc_type = d2.document_type AND cr2.company_id = e.company_id
+			LEFT JOIN compliance_rules gr2 ON gr2.doc_type = d2.document_type AND gr2.company_id IS NULL
+			WHERE d2.employee_id = e.id AND COALESCE(dt2.is_mandatory, d2.is_mandatory) = TRUE
 		) ds ON TRUE
 		WHERE e.id = $1
 	`, employeeCols), id,

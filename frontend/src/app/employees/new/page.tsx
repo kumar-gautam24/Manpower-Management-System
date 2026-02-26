@@ -73,7 +73,7 @@ export default function AddEmployeePage() {
             setSubmitting(true);
             const res = await api.employees.create(form);
             const empId = res.data.id;
-            toast.success('Employee created — 7 document slots ready!', {
+            toast.success('Employee created — mandatory document slots ready!', {
                 description: 'Fill in the mandatory documents to start compliance tracking.',
                 duration: 8000,
                 action: {
@@ -200,7 +200,7 @@ export default function AddEmployeePage() {
                                 </div>
 
                                 <div className="space-y-2">
-                                    <Label htmlFor="nativeLoc">Native Location</Label>
+                                    <Label htmlFor="nativeLoc">Native Location <span className="text-muted-foreground font-normal">(optional)</span></Label>
                                     <Input id="nativeLoc" placeholder="e.g. Kerala, India" value={form.nativeLocation || ''}
                                         onChange={(e) => setForm({ ...form, nativeLocation: e.target.value })} />
                                 </div>
@@ -212,7 +212,7 @@ export default function AddEmployeePage() {
                                 </div>
 
                                 <div className="space-y-2">
-                                    <Label htmlFor="salary">Salary ({companies.find(c => c.id === form.companyId)?.currency || 'AED'}/month)</Label>
+                                    <Label htmlFor="salary">Salary ({companies.find(c => c.id === form.companyId)?.currency || 'AED'}/month) <span className="text-muted-foreground font-normal">(optional)</span></Label>
                                     <Input id="salary" type="number" step="0.01" placeholder="e.g. 3500" value={form.salary ?? ''}
                                         onChange={(e) => setForm({ ...form, salary: e.target.value ? parseFloat(e.target.value) : undefined })} />
                                 </div>

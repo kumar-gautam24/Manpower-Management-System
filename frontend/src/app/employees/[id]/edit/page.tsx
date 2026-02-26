@@ -220,7 +220,7 @@ export default function EditEmployeePage() {
                                 </div>
 
                                 <div className="space-y-2">
-                                    <Label htmlFor="nativeLoc">Native Location</Label>
+                                    <Label htmlFor="nativeLoc">Native Location <span className="text-muted-foreground font-normal">(optional)</span></Label>
                                     <Input id="nativeLoc" placeholder="e.g. Kerala, India" value={form.nativeLocation || ''}
                                         onChange={(e) => setForm({ ...form, nativeLocation: e.target.value })} />
                                 </div>
@@ -232,7 +232,7 @@ export default function EditEmployeePage() {
                                 </div>
 
                                 <div className="space-y-2">
-                                    <Label htmlFor="salary">Salary ({selectedCurrency}/month)</Label>
+                                    <Label htmlFor="salary">Salary ({selectedCurrency}/month) <span className="text-muted-foreground font-normal">(optional)</span></Label>
                                     <Input id="salary" type="number" step="0.01" placeholder="e.g. 3500" value={form.salary ?? ''}
                                         onChange={(e) => setForm({ ...form, salary: e.target.value ? parseFloat(e.target.value) : undefined })} />
                                 </div>

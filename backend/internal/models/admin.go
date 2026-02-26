@@ -18,8 +18,19 @@ type DocumentType struct {
 	MetadataFields    json.RawMessage `json:"metadataFields"`
 	IsSystem          bool            `json:"isSystem"`
 	IsActive          bool            `json:"isActive"`
-	CreatedAt         string          `json:"createdAt"`
-	UpdatedAt         string          `json:"updatedAt"`
+
+	// Per-field visibility and required flags (migration 008)
+	ShowDocumentNumber    bool `json:"showDocumentNumber"`
+	RequireDocumentNumber bool `json:"requireDocumentNumber"`
+	ShowIssueDate         bool `json:"showIssueDate"`
+	RequireIssueDate      bool `json:"requireIssueDate"`
+	ShowExpiryDate        bool `json:"showExpiryDate"`
+	RequireExpiryDate     bool `json:"requireExpiryDate"`
+	ShowFile              bool `json:"showFile"`
+	RequireFile           bool `json:"requireFile"`
+
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // CreateDocumentTypeRequest is used to add a custom document type.
@@ -32,6 +43,15 @@ type CreateDocumentTypeRequest struct {
 	ExpiryLabel       string          `json:"expiryLabel"`
 	SortOrder         int             `json:"sortOrder"`
 	MetadataFields    json.RawMessage `json:"metadataFields"`
+
+	ShowDocumentNumber    *bool `json:"showDocumentNumber,omitempty"`
+	RequireDocumentNumber *bool `json:"requireDocumentNumber,omitempty"`
+	ShowIssueDate         *bool `json:"showIssueDate,omitempty"`
+	RequireIssueDate      *bool `json:"requireIssueDate,omitempty"`
+	ShowExpiryDate        *bool `json:"showExpiryDate,omitempty"`
+	RequireExpiryDate     *bool `json:"requireExpiryDate,omitempty"`
+	ShowFile              *bool `json:"showFile,omitempty"`
+	RequireFile           *bool `json:"requireFile,omitempty"`
 }
 
 // Validate checks required fields for a new document type.
@@ -54,6 +74,15 @@ type UpdateDocumentTypeRequest struct {
 	ExpiryLabel       *string          `json:"expiryLabel,omitempty"`
 	SortOrder         *int             `json:"sortOrder,omitempty"`
 	MetadataFields    *json.RawMessage `json:"metadataFields,omitempty"`
+
+	ShowDocumentNumber    *bool `json:"showDocumentNumber,omitempty"`
+	RequireDocumentNumber *bool `json:"requireDocumentNumber,omitempty"`
+	ShowIssueDate         *bool `json:"showIssueDate,omitempty"`
+	RequireIssueDate      *bool `json:"requireIssueDate,omitempty"`
+	ShowExpiryDate        *bool `json:"showExpiryDate,omitempty"`
+	RequireExpiryDate     *bool `json:"requireExpiryDate,omitempty"`
+	ShowFile              *bool `json:"showFile,omitempty"`
+	RequireFile           *bool `json:"requireFile,omitempty"`
 }
 
 // ── Compliance Rules ─────────────────────────────────────────

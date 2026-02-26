@@ -10,17 +10,12 @@ import { Label } from '@/components/ui/label';
 import {
     Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { Loader2, Upload, FileText, Image, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { Loader2, Upload, FileText, Image, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
-import {
-    DOC_TYPES, docDisplayName, getDocTypeConfig,
-    type DocTypeKey, type MetadataFieldDef,
-} from '@/lib/constants';
-import type { Document, DocumentWithCompliance, EmployeeWithCompany } from '@/types';
-
-/** All selectable types for chip selector */
-const SELECTABLE_TYPES = Object.entries(DOC_TYPES).map(([key, display]) => ({ key, display }));
+import { docDisplayName } from '@/lib/constants';
+import { useDocumentTypes } from '@/hooks/use-document-types';
+import type { Document, DocumentWithCompliance, EmployeeWithCompany, AdminDocumentType, MetadataFieldDef } from '@/types';
 
 // ── Shared helpers ──────────────────────────────────────────────
 
@@ -54,6 +49,14 @@ function renderMetadataField(
     );
 }
 
+function requiredTag() {
+    return <span className="text-red-500"> *</span>;
+}
+
+function optionalTag() {
+    return <span className="text-muted-foreground font-normal"> (optional)</span>;
+}
+
 // ── Add Document Dialog ─────────────────────────────────────────
 
 interface AddDocumentDialogProps {
@@ -66,41 +69,30 @@ interface AddDocumentDialogProps {
 }
 
 export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess, preselectedType, employee }: AddDocumentDialogProps) {
+    const { types: docTypes } = useDocumentTypes();
+
     const [documentType, setDocumentType] = useState(preselectedType || '');
     const [documentNumber, setDocumentNumber] = useState('');
     const [issueDate, setIssueDate] = useState('');
     const [expiryDate, setExpiryDate] = useState('');
-    const [gracePeriodDays, setGracePeriodDays] = useState(0);
-    const [finePerDay, setFinePerDay] = useState(0);
-    const [fineType, setFineType] = useState<string>('daily');
-    const [fineCap, setFineCap] = useState(0);
     const [metadata, setMetadata] = useState<Record<string, unknown>>({});
-    const [showAdvanced, setShowAdvanced] = useState(false);
     const [file, setFile] = useState<File | null>(null);
     const [uploading, setUploading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const config = getDocTypeConfig(documentType);
+    const config = docTypes.find(t => t.docType === documentType);
 
-    // When type changes, auto-fill defaults
     useEffect(() => {
-        if (!documentType) return;
-        const cfg = getDocTypeConfig(documentType);
-        setGracePeriodDays(cfg.defaultGraceDays);
-        setFinePerDay(cfg.defaultFinePerDay);
-        setFineType(cfg.defaultFineType);
-        setFineCap(cfg.defaultFineCap);
-
-        // Auto-fill metadata from employee context
+        if (!documentType || !config) return;
         const autoMeta: Record<string, unknown> = {};
-        for (const field of cfg.metadataFields) {
+        for (const field of (config.metadataFields || [])) {
             if (field.key === 'nationality' && employee?.nationality) autoMeta.nationality = employee.nationality;
             if (field.key === 'sponsor' && employee?.companyName) autoMeta.sponsor = employee.companyName;
             if (field.key === 'job_title' && employee?.trade) autoMeta.job_title = employee.trade;
             if (field.key === 'linked_passport' && employee?.passportNumber) autoMeta.linked_passport = employee.passportNumber;
         }
         setMetadata(autoMeta);
-    }, [documentType, employee]);
+    }, [documentType, employee, config]);
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const selected = e.target.files?.[0];
@@ -123,8 +115,20 @@ export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess, p
         setMetadata((prev) => ({ ...prev, [key]: val }));
     };
 
+    const validate = (): string | null => {
+        if (!config) return null;
+        if (config.requireDocumentNumber && !documentNumber.trim()) return `${config.numberLabel} is required`;
+        if (config.requireIssueDate && !issueDate) return 'Issue date is required';
+        if (config.requireExpiryDate && !expiryDate) return `${config.expiryLabel} is required`;
+        if (config.requireFile && !file) return 'File upload is required';
+        return null;
+    };
+
     const handleSubmit = async () => {
         if (!documentType) return;
+        const validationError = validate();
+        if (validationError) { toast.error(validationError); return; }
+
         setUploading(true);
 
         try {
@@ -139,10 +143,6 @@ export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess, p
                 documentNumber: documentNumber || undefined,
                 issueDate: issueDate || undefined,
                 expiryDate: expiryDate || undefined,
-                gracePeriodDays,
-                finePerDay,
-                fineType,
-                fineCap,
                 metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
                 ...fileData,
             });
@@ -163,12 +163,7 @@ export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess, p
         setDocumentNumber('');
         setIssueDate('');
         setExpiryDate('');
-        setGracePeriodDays(0);
-        setFinePerDay(0);
-        setFineType('daily');
-        setFineCap(0);
         setMetadata({});
-        setShowAdvanced(false);
         setFile(null);
     };
 
@@ -192,18 +187,18 @@ export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess, p
                             </p>
                         ) : (
                             <div className="flex flex-wrap gap-2">
-                                {SELECTABLE_TYPES.map(({ key, display }) => (
+                                {docTypes.map((dt) => (
                                     <button
-                                        key={key}
+                                        key={dt.docType}
                                         type="button"
-                                        onClick={() => setDocumentType(key)}
+                                        onClick={() => setDocumentType(dt.docType)}
                                         className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
-                                            documentType === key
+                                            documentType === dt.docType
                                                 ? 'bg-blue-600 text-white border-blue-600'
                                                 : 'bg-muted border-border text-muted-foreground hover:border-blue-400 dark:hover:border-blue-600'
                                         }`}
                                     >
-                                        {display}
+                                        {dt.displayName}
                                     </button>
                                 ))}
                             </div>
@@ -211,12 +206,12 @@ export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess, p
                     </div>
 
                     {/* ── Fields shown after type is selected ── */}
-                    {documentType && (
+                    {documentType && config && (
                         <>
                             {/* Custom name for "Other" type */}
                             {documentType === 'other' && (
                                 <div className="space-y-2">
-                                    <Label>Document Name <span className="text-red-500">*</span></Label>
+                                    <Label>Document Name {requiredTag()}</Label>
                                     <Input
                                         placeholder="e.g. Certificate of Good Conduct"
                                         value={String(metadata.custom_name || '')}
@@ -226,132 +221,76 @@ export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess, p
                             )}
 
                             {/* Document Number */}
-                            <div className="space-y-2">
-                                <Label>{config.numberLabel}</Label>
-                                <Input
-                                    placeholder={config.numberPlaceholder}
-                                    value={documentNumber}
-                                    onChange={(e) => setDocumentNumber(e.target.value)}
-                                />
-                            </div>
+                            {config.showDocumentNumber && (
+                                <div className="space-y-2">
+                                    <Label>{config.numberLabel}{config.requireDocumentNumber ? requiredTag() : optionalTag()}</Label>
+                                    <Input
+                                        placeholder={config.numberPlaceholder}
+                                        value={documentNumber}
+                                        onChange={(e) => setDocumentNumber(e.target.value)}
+                                    />
+                                </div>
+                            )}
 
                             {/* Issue Date */}
-                            <div className="space-y-2">
-                                <Label>Issue Date <span className="text-muted-foreground font-normal">(optional)</span></Label>
-                                <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
-                            </div>
+                            {config.showIssueDate && (
+                                <div className="space-y-2">
+                                    <Label>Issue Date{config.requireIssueDate ? requiredTag() : optionalTag()}</Label>
+                                    <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
+                                </div>
+                            )}
 
                             {/* Expiry / Renewal Date */}
-                            <div className="space-y-2">
-                                {/* TODO: consider adding min={today} to prevent past dates in production */}
-                                <Label>{config.expiryLabel} <span className="text-muted-foreground font-normal">(optional)</span></Label>
-                                <Input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} />
-                            </div>
-
-                            {/* Grace Period */}
-                            <div className="space-y-2">
-                                <Label>Grace Period (days)</Label>
-                                <Input
-                                    type="number"
-                                    min={0}
-                                    value={gracePeriodDays}
-                                    onChange={(e) => setGracePeriodDays(parseInt(e.target.value) || 0)}
-                                />
-                                {config.defaultGraceDays > 0 && (
-                                    <p className="text-xs text-muted-foreground">
-                                        UAE default for {DOC_TYPES[documentType as DocTypeKey] || documentType}: {config.defaultGraceDays} days
-                                    </p>
-                                )}
-                            </div>
+                            {config.showExpiryDate && (
+                                <div className="space-y-2">
+                                    <Label>{config.expiryLabel}{config.requireExpiryDate ? requiredTag() : optionalTag()}</Label>
+                                    <Input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} />
+                                </div>
+                            )}
 
                             {/* Type-specific metadata fields */}
-                            {config.metadataFields
-                                .filter((f) => f.key !== 'custom_name')
-                                .map((field) => (
+                            {(config.metadataFields || [])
+                                .filter((f: MetadataFieldDef) => f.key !== 'custom_name')
+                                .map((field: MetadataFieldDef) => (
                                     <div key={field.key} className="space-y-2">
                                         <Label>
                                             {field.label}
-                                            {field.required && <span className="text-red-500"> *</span>}
+                                            {field.required && requiredTag()}
                                         </Label>
                                         {renderMetadataField(field, metadata[field.key], updateMetadata)}
                                     </div>
                                 ))}
 
-                            {/* ── Advanced: Fine Configuration ── */}
-                            <button
-                                type="button"
-                                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                                onClick={() => setShowAdvanced(!showAdvanced)}
-                            >
-                                {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                                Fine Configuration
-                            </button>
-
-                            {showAdvanced && (
-                                <div className="grid grid-cols-3 gap-3 p-3 rounded-lg border border-border bg-muted/30">
-                                    <div className="space-y-1">
-                                        <Label className="text-xs">Fine Rate (AED)</Label>
-                                        <Input
-                                            type="number"
-                                            min={0}
-                                            step="0.01"
-                                            value={finePerDay}
-                                            onChange={(e) => setFinePerDay(parseFloat(e.target.value) || 0)}
-                                        />
-                                    </div>
-                                    <div className="space-y-1">
-                                        <Label className="text-xs">Fine Type</Label>
-                                        <Select value={fineType} onValueChange={setFineType}>
-                                            <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-                                            <SelectContent>
-                                                <SelectItem value="daily">Per Day</SelectItem>
-                                                <SelectItem value="monthly">Per Month</SelectItem>
-                                                <SelectItem value="one_time">One-time</SelectItem>
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-                                    <div className="space-y-1">
-                                        <Label className="text-xs">Cap (AED)</Label>
-                                        <Input
-                                            type="number"
-                                            min={0}
-                                            step="0.01"
-                                            value={fineCap}
-                                            onChange={(e) => setFineCap(parseFloat(e.target.value) || 0)}
-                                            placeholder="0 = no cap"
-                                        />
-                                    </div>
+                            {/* ── File Upload ── */}
+                            {config.showFile && (
+                                <div className="space-y-2">
+                                    <Label>File{config.requireFile ? requiredTag() : optionalTag()}</Label>
+                                    {file ? (
+                                        <div className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/30">
+                                            <FileIcon className="h-8 w-8 text-blue-600 dark:text-blue-400 flex-shrink-0" />
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-sm font-medium truncate">{file.name}</p>
+                                                <p className="text-xs text-muted-foreground">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
+                                            </div>
+                                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setFile(null)}>
+                                                <X className="h-4 w-4" />
+                                            </Button>
+                                        </div>
+                                    ) : (
+                                        <div
+                                            onDrop={handleDrop}
+                                            onDragOver={(e) => e.preventDefault()}
+                                            onClick={() => fileInputRef.current?.click()}
+                                            className="flex flex-col items-center gap-2 p-6 rounded-lg border-2 border-dashed border-border cursor-pointer
+                                                hover:border-blue-400 dark:hover:border-blue-600 hover:bg-blue-50/50 dark:hover:bg-blue-950/20 transition-colors"
+                                        >
+                                            <Upload className="h-6 w-6 text-muted-foreground" />
+                                            <p className="text-sm text-muted-foreground">Click or drag & drop (PDF, JPG, PNG — max 10MB)</p>
+                                        </div>
+                                    )}
+                                    <input ref={fileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={handleFileChange} className="hidden" />
                                 </div>
                             )}
-
-                            {/* ── File Upload ── */}
-                            <div className="space-y-2">
-                                <Label>File <span className="text-muted-foreground font-normal">(optional)</span></Label>
-                                {file ? (
-                                    <div className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/30">
-                                        <FileIcon className="h-8 w-8 text-blue-600 dark:text-blue-400 flex-shrink-0" />
-                                        <div className="flex-1 min-w-0">
-                                            <p className="text-sm font-medium truncate">{file.name}</p>
-                                            <p className="text-xs text-muted-foreground">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
-                                        </div>
-                                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setFile(null)}>
-                                            <X className="h-4 w-4" />
-                                        </Button>
-                                    </div>
-                                ) : (
-                                    <div
-                                        onDrop={handleDrop}
-                                        onDragOver={(e) => e.preventDefault()}
-                                        onClick={() => fileInputRef.current?.click()}
-                                        className="flex flex-col items-center gap-2 p-6 rounded-lg border-2 border-dashed border-border cursor-pointer
-                                            hover:border-blue-400 dark:hover:border-blue-600 hover:bg-blue-50/50 dark:hover:bg-blue-950/20 transition-colors"
-                                    >
-                                        <Upload className="h-6 w-6 text-muted-foreground" />
-                                        <p className="text-sm text-muted-foreground">Click or drag & drop (PDF, JPG, PNG — max 10MB)</p>
-                                    </div>
-                                )}
-                                <input ref={fileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={handleFileChange} className="hidden" />
-                            </div>
                         </>
                     )}
                 </div>
@@ -378,22 +317,19 @@ interface EditDocumentDialogProps {
 }
 
 export function EditDocumentDialog({ document, open, onOpenChange, onSuccess }: EditDocumentDialogProps) {
+    const { types: docTypes } = useDocumentTypes();
+
     const [documentType, setDocumentType] = useState(document.documentType);
     const [documentNumber, setDocumentNumber] = useState(document.documentNumber || '');
     const [issueDate, setIssueDate] = useState(document.issueDate || '');
     const [expiryDate, setExpiryDate] = useState(document.expiryDate || '');
-    const [gracePeriodDays, setGracePeriodDays] = useState(document.gracePeriodDays || 0);
-    const [finePerDay, setFinePerDay] = useState(document.finePerDay || 0);
-    const [fineType, setFineType] = useState(document.fineType || 'daily');
-    const [fineCap, setFineCap] = useState(document.fineCap || 0);
     const [metadata, setMetadata] = useState<Record<string, unknown>>(document.metadata || {});
-    const [showAdvanced, setShowAdvanced] = useState(false);
     const [file, setFile] = useState<File | null>(null);
     const [saving, setSaving] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const isMandatory = 'isMandatory' in document && document.isMandatory;
-    const config = getDocTypeConfig(documentType);
+    const config = docTypes.find(t => t.docType === documentType);
 
     const updateMetadata = (key: string, val: unknown) => {
         setMetadata((prev) => ({ ...prev, [key]: val }));
@@ -415,10 +351,6 @@ export function EditDocumentDialog({ document, open, onOpenChange, onSuccess }: 
                 documentNumber: documentNumber || undefined,
                 issueDate: issueDate || undefined,
                 expiryDate: expiryDate || undefined,
-                gracePeriodDays,
-                finePerDay,
-                fineType,
-                fineCap,
                 metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
                 ...fileData,
             });
@@ -438,7 +370,7 @@ export function EditDocumentDialog({ document, open, onOpenChange, onSuccess }: 
             <DialogContent className="sm:max-w-lg">
                 <DialogHeader>
                     <DialogTitle>Edit Document</DialogTitle>
-                    <DialogDescription>Update the document details, compliance settings, or file.</DialogDescription>
+                    <DialogDescription>Update the document details or file.</DialogDescription>
                 </DialogHeader>
 
                 <div className="max-h-[70vh] overflow-y-auto space-y-4 py-2 pr-1">
@@ -451,144 +383,101 @@ export function EditDocumentDialog({ document, open, onOpenChange, onSuccess }: 
                             </p>
                         ) : (
                             <div className="flex flex-wrap gap-2">
-                                {SELECTABLE_TYPES.map(({ key, display }) => (
+                                {docTypes.map((dt) => (
                                     <button
-                                        key={key}
+                                        key={dt.docType}
                                         type="button"
-                                        onClick={() => setDocumentType(key)}
+                                        onClick={() => setDocumentType(dt.docType)}
                                         className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
-                                            documentType === key
+                                            documentType === dt.docType
                                                 ? 'bg-blue-600 text-white border-blue-600'
                                                 : 'bg-muted border-border text-muted-foreground hover:border-blue-400 dark:hover:border-blue-600'
                                         }`}
                                     >
-                                        {display}
+                                        {dt.displayName}
                                     </button>
                                 ))}
                             </div>
                         )}
                     </div>
 
-                    {/* Custom name for "Other" type */}
-                    {documentType === 'other' && (
-                        <div className="space-y-2">
-                            <Label>Document Name <span className="text-red-500">*</span></Label>
-                            <Input
-                                placeholder="e.g. Certificate of Good Conduct"
-                                value={String(metadata.custom_name || '')}
-                                onChange={(e) => updateMetadata('custom_name', e.target.value)}
-                            />
-                        </div>
+                    {config && (
+                        <>
+                            {/* Custom name for "Other" type */}
+                            {documentType === 'other' && (
+                                <div className="space-y-2">
+                                    <Label>Document Name {requiredTag()}</Label>
+                                    <Input
+                                        placeholder="e.g. Certificate of Good Conduct"
+                                        value={String(metadata.custom_name || '')}
+                                        onChange={(e) => updateMetadata('custom_name', e.target.value)}
+                                    />
+                                </div>
+                            )}
+
+                            {/* Document Number */}
+                            {config.showDocumentNumber && (
+                                <div className="space-y-2">
+                                    <Label>{config.numberLabel}{config.requireDocumentNumber ? requiredTag() : optionalTag()}</Label>
+                                    <Input
+                                        placeholder={config.numberPlaceholder}
+                                        value={documentNumber}
+                                        onChange={(e) => setDocumentNumber(e.target.value)}
+                                    />
+                                </div>
+                            )}
+
+                            {/* Issue Date */}
+                            {config.showIssueDate && (
+                                <div className="space-y-2">
+                                    <Label>Issue Date{config.requireIssueDate ? requiredTag() : optionalTag()}</Label>
+                                    <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
+                                </div>
+                            )}
+
+                            {/* Expiry / Renewal Date */}
+                            {config.showExpiryDate && (
+                                <div className="space-y-2">
+                                    <Label>{config.expiryLabel}{config.requireExpiryDate ? requiredTag() : optionalTag()}</Label>
+                                    <Input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} />
+                                </div>
+                            )}
+
+                            {/* Type-specific metadata fields */}
+                            {(config.metadataFields || [])
+                                .filter((f: MetadataFieldDef) => f.key !== 'custom_name')
+                                .map((field: MetadataFieldDef) => (
+                                    <div key={field.key} className="space-y-2">
+                                        <Label>
+                                            {field.label}
+                                            {field.required && requiredTag()}
+                                        </Label>
+                                        {renderMetadataField(field, metadata[field.key], updateMetadata)}
+                                    </div>
+                                ))}
+
+                            {/* Replace File */}
+                            {config.showFile && (
+                                <div className="space-y-2">
+                                    <Label>Replace File{optionalTag()}</Label>
+                                    {file ? (
+                                        <div className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/30">
+                                            <FileText className="h-6 w-6 text-blue-600" />
+                                            <span className="text-sm truncate flex-1">{file.name}</span>
+                                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setFile(null)}>
+                                                <X className="h-4 w-4" />
+                                            </Button>
+                                        </div>
+                                    ) : (
+                                        <Button variant="outline" className="w-full gap-2" onClick={() => fileInputRef.current?.click()}>
+                                            <Upload className="h-4 w-4" /> Choose New File
+                                        </Button>
+                                    )}
+                                    <input ref={fileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={(e) => setFile(e.target.files?.[0] || null)} className="hidden" />
+                                </div>
+                            )}
+                        </>
                     )}
-
-                    {/* Document Number */}
-                    <div className="space-y-2">
-                        <Label>{config.numberLabel}</Label>
-                        <Input
-                            placeholder={config.numberPlaceholder}
-                            value={documentNumber}
-                            onChange={(e) => setDocumentNumber(e.target.value)}
-                        />
-                    </div>
-
-                    {/* Issue Date */}
-                    <div className="space-y-2">
-                        <Label>Issue Date <span className="text-muted-foreground font-normal">(optional)</span></Label>
-                        <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
-                    </div>
-
-                    {/* Expiry / Renewal Date */}
-                    <div className="space-y-2">
-                        {/* TODO: consider adding min={today} to prevent past dates in production */}
-                        <Label>{config.expiryLabel} <span className="text-muted-foreground font-normal">(optional)</span></Label>
-                        <Input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} />
-                    </div>
-
-                    {/* Grace Period */}
-                    <div className="space-y-2">
-                        <Label>Grace Period (days)</Label>
-                        <Input
-                            type="number"
-                            min={0}
-                            value={gracePeriodDays}
-                            onChange={(e) => setGracePeriodDays(parseInt(e.target.value) || 0)}
-                        />
-                    </div>
-
-                    {/* Type-specific metadata fields */}
-                    {config.metadataFields
-                        .filter((f) => f.key !== 'custom_name')
-                        .map((field) => (
-                            <div key={field.key} className="space-y-2">
-                                <Label>
-                                    {field.label}
-                                    {field.required && <span className="text-red-500"> *</span>}
-                                </Label>
-                                {renderMetadataField(field, metadata[field.key], updateMetadata)}
-                            </div>
-                        ))}
-
-                    {/* Advanced: Fine Configuration */}
-                    <button
-                        type="button"
-                        className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                        onClick={() => setShowAdvanced(!showAdvanced)}
-                    >
-                        {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                        Fine Configuration
-                    </button>
-
-                    {showAdvanced && (
-                        <div className="grid grid-cols-3 gap-3 p-3 rounded-lg border border-border bg-muted/30">
-                            <div className="space-y-1">
-                                <Label className="text-xs">Fine Rate (AED)</Label>
-                                <Input
-                                    type="number" min={0} step="0.01"
-                                    value={finePerDay}
-                                    onChange={(e) => setFinePerDay(parseFloat(e.target.value) || 0)}
-                                />
-                            </div>
-                            <div className="space-y-1">
-                                <Label className="text-xs">Fine Type</Label>
-                                <Select value={fineType} onValueChange={setFineType}>
-                                    <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="daily">Per Day</SelectItem>
-                                        <SelectItem value="monthly">Per Month</SelectItem>
-                                        <SelectItem value="one_time">One-time</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                            <div className="space-y-1">
-                                <Label className="text-xs">Cap (AED)</Label>
-                                <Input
-                                    type="number" min={0} step="0.01"
-                                    value={fineCap}
-                                    onChange={(e) => setFineCap(parseFloat(e.target.value) || 0)}
-                                    placeholder="0 = no cap"
-                                />
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Replace File */}
-                    <div className="space-y-2">
-                        <Label>Replace File <span className="text-muted-foreground font-normal">(optional)</span></Label>
-                        {file ? (
-                            <div className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/30">
-                                <FileText className="h-6 w-6 text-blue-600" />
-                                <span className="text-sm truncate flex-1">{file.name}</span>
-                                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setFile(null)}>
-                                    <X className="h-4 w-4" />
-                                </Button>
-                            </div>
-                        ) : (
-                            <Button variant="outline" className="w-full gap-2" onClick={() => fileInputRef.current?.click()}>
-                                <Upload className="h-4 w-4" /> Choose New File
-                            </Button>
-                        )}
-                        <input ref={fileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={(e) => setFile(e.target.files?.[0] || null)} className="hidden" />
-                    </div>
                 </div>
 
                 <DialogFooter>

@@ -45,7 +45,8 @@ func (h *DashboardHandler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 	err = pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM documents d
 		JOIN employees e ON d.employee_id = e.id
-		WHERE d.is_mandatory = TRUE AND d.expiry_date IS NOT NULL
+		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
+		WHERE COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE AND d.expiry_date IS NOT NULL
 		  AND d.expiry_date > CURRENT_DATE + INTERVAL '30 days'
 		  AND e.exit_type IS NULL
 	`).Scan(&metrics.ActiveDocuments)
@@ -58,7 +59,8 @@ func (h *DashboardHandler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 	err = pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM documents d
 		JOIN employees e ON d.employee_id = e.id
-		WHERE d.is_mandatory = TRUE AND d.expiry_date IS NOT NULL
+		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
+		WHERE COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE AND d.expiry_date IS NOT NULL
 		  AND d.expiry_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
 		  AND e.exit_type IS NULL
 	`).Scan(&metrics.ExpiringSoon)
@@ -68,13 +70,15 @@ func (h *DashboardHandler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Expired: past expiry date AND past grace period (consistent with compliance engine)
 	err = pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM documents d
 		JOIN employees e ON d.employee_id = e.id
-		WHERE d.is_mandatory = TRUE AND d.expiry_date IS NOT NULL
+		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
+		LEFT JOIN compliance_rules cr ON cr.doc_type = d.document_type AND cr.company_id = e.company_id
+		LEFT JOIN compliance_rules gr ON gr.doc_type = d.document_type AND gr.company_id IS NULL
+		WHERE COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE AND d.expiry_date IS NOT NULL
 		  AND d.expiry_date < CURRENT_DATE
-		  AND (d.expiry_date + d.grace_period_days * INTERVAL '1 day') < CURRENT_DATE
+		  AND (d.expiry_date + COALESCE(cr.grace_period_days, gr.grace_period_days, d.grace_period_days) * INTERVAL '1 day') < CURRENT_DATE
 		  AND e.exit_type IS NULL
 	`).Scan(&metrics.Expired)
 	if err != nil {
@@ -100,12 +104,18 @@ func (h *DashboardHandler) GetExpiryAlerts(w http.ResponseWriter, r *http.Reques
 			d.id, e.id, e.name, c.name, d.document_type,
 			d.expiry_date::text,
 			(d.expiry_date - CURRENT_DATE) AS days_left,
-			d.grace_period_days, d.fine_per_day, d.fine_type, d.fine_cap,
+			COALESCE(cr.grace_period_days, gr.grace_period_days, d.grace_period_days) AS grace_period_days,
+			COALESCE(cr.fine_per_day, gr.fine_per_day, d.fine_per_day) AS fine_per_day,
+			COALESCE(cr.fine_type, gr.fine_type, d.fine_type) AS fine_type,
+			COALESCE(cr.fine_cap, gr.fine_cap, d.fine_cap) AS fine_cap,
 			d.document_number
 		FROM documents d
 		JOIN employees e ON d.employee_id = e.id
 		JOIN companies c ON e.company_id = c.id
-		WHERE d.is_mandatory = TRUE AND d.expiry_date IS NOT NULL
+		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
+		LEFT JOIN compliance_rules cr ON cr.doc_type = d.document_type AND cr.company_id = e.company_id
+		LEFT JOIN compliance_rules gr ON gr.doc_type = d.document_type AND gr.company_id IS NULL
+		WHERE COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE AND d.expiry_date IS NOT NULL
 		  AND d.expiry_date <= CURRENT_DATE + INTERVAL '30 days'
 		  AND e.exit_type IS NULL
 		ORDER BY d.expiry_date ASC
@@ -216,16 +226,25 @@ func (h *DashboardHandler) GetComplianceStats(w http.ResponseWriter, r *http.Req
 	// Total employees (excluding exited)
 	pool.QueryRow(ctx, `SELECT COUNT(*) FROM employees WHERE exit_type IS NULL`).Scan(&stats.TotalEmployees)
 
-	// Total mandatory documents
-	pool.QueryRow(ctx, `SELECT COUNT(*) FROM documents WHERE is_mandatory = TRUE`).Scan(&stats.TotalDocuments)
+	pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM documents d
+		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
+		WHERE COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE
+	`).Scan(&stats.TotalDocuments)
 
-	// Fetch all mandatory docs with expiry info for status computation
 	rows, err := pool.Query(ctx, `
-		SELECT d.document_number, d.expiry_date::text, d.grace_period_days,
-			d.fine_per_day, d.fine_type, d.fine_cap, d.file_url
+		SELECT d.document_number, d.expiry_date::text,
+			COALESCE(cr.grace_period_days, gr.grace_period_days, d.grace_period_days) AS grace_period_days,
+			COALESCE(cr.fine_per_day, gr.fine_per_day, d.fine_per_day) AS fine_per_day,
+			COALESCE(cr.fine_type, gr.fine_type, d.fine_type) AS fine_type,
+			COALESCE(cr.fine_cap, gr.fine_cap, d.fine_cap) AS fine_cap,
+			d.file_url
 		FROM documents d
 		JOIN employees e ON d.employee_id = e.id
-		WHERE d.is_mandatory = TRUE AND e.exit_type IS NULL
+		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
+		LEFT JOIN compliance_rules cr ON cr.doc_type = d.document_type AND cr.company_id = e.company_id
+		LEFT JOIN compliance_rules gr ON gr.doc_type = d.document_type AND gr.company_id IS NULL
+		WHERE COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE AND e.exit_type IS NULL
 	`)
 	if err != nil {
 		log.Printf("Error fetching compliance stats: %v", err)
@@ -280,12 +299,11 @@ func (h *DashboardHandler) GetComplianceStats(w http.ResponseWriter, r *http.Req
 		stats.CompletionRate = float64(totalComplete) / float64(stats.TotalDocuments) * 100
 	}
 
-	// Per-company compliance breakdown (grace-period-aware)
 	companyRows, err := pool.Query(ctx, `
 		SELECT c.id, c.name, COUNT(DISTINCT e.id) AS emp_count,
 			COUNT(d.id) FILTER (WHERE d.expiry_date IS NOT NULL 
 				AND d.expiry_date < CURRENT_DATE
-				AND (d.expiry_date + d.grace_period_days * INTERVAL '1 day') < CURRENT_DATE
+				AND (d.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d.grace_period_days) * INTERVAL '1 day') < CURRENT_DATE
 			) AS penalty_count,
 			COUNT(d.id) FILTER (WHERE d.document_number IS NULL 
 				OR d.document_number = ''
@@ -293,7 +311,11 @@ func (h *DashboardHandler) GetComplianceStats(w http.ResponseWriter, r *http.Req
 			) AS incomplete_count
 		FROM companies c
 		LEFT JOIN employees e ON e.company_id = c.id AND e.exit_type IS NULL
-		LEFT JOIN documents d ON d.employee_id = e.id AND d.is_mandatory = TRUE
+		LEFT JOIN documents d ON d.employee_id = e.id
+		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
+		LEFT JOIN compliance_rules cr2 ON cr2.doc_type = d.document_type AND cr2.company_id = c.id
+		LEFT JOIN compliance_rules gr2 ON gr2.doc_type = d.document_type AND gr2.company_id IS NULL
+		WHERE COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE OR d.id IS NULL
 		GROUP BY c.id, c.name
 		ORDER BY penalty_count DESC
 	`)
@@ -354,11 +376,11 @@ func (h *DashboardHandler) GetDependencyAlerts(w http.ResponseWriter, r *http.Re
 		deps = append(deps, d)
 	}
 
-	// Fetch employee's mandatory documents with expiry
 	docRows, err := pool.Query(ctx, `
-		SELECT document_type, COALESCE(expiry_date::text, ''), document_number
-		FROM documents
-		WHERE employee_id = $1 AND is_mandatory = TRUE
+		SELECT d.document_type, COALESCE(d.expiry_date::text, ''), d.document_number
+		FROM documents d
+		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
+		WHERE d.employee_id = $1 AND COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE
 	`, employeeID)
 	if err != nil {
 		log.Printf("Error fetching employee docs for dependency check: %v", err)

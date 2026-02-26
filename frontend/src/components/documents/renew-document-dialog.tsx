@@ -10,7 +10,8 @@ import { Label } from '@/components/ui/label';
 import { Loader2, Upload, FileText, Image, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
-import { docDisplayName, getDocTypeConfig } from '@/lib/constants';
+import { docDisplayName } from '@/lib/constants';
+import { useDocumentTypes } from '@/hooks/use-document-types';
 import type { Document, DocumentWithCompliance } from '@/types';
 
 interface RenewDocumentDialogProps {
@@ -21,13 +22,14 @@ interface RenewDocumentDialogProps {
 }
 
 export function RenewDocumentDialog({ document, open, onOpenChange, onSuccess }: RenewDocumentDialogProps) {
+    const { types: docTypes } = useDocumentTypes();
     const [documentNumber, setDocumentNumber] = useState(document.documentNumber || '');
     const [issueDate, setIssueDate] = useState('');
     const [expiryDate, setExpiryDate] = useState('');
     const [file, setFile] = useState<File | null>(null);
     const [uploading, setUploading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const config = getDocTypeConfig(document.documentType);
+    const config = docTypes.find(t => t.docType === document.documentType);
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const selected = e.target.files?.[0];
@@ -118,9 +120,9 @@ export function RenewDocumentDialog({ document, open, onOpenChange, onSuccess }:
                 <div className="space-y-4 py-2">
                     {/* Document Number */}
                     <div className="space-y-2">
-                        <Label>New {config.numberLabel} <span className="text-muted-foreground font-normal">(optional — keeps old)</span></Label>
+                        <Label>New {config?.numberLabel || 'Document Number'} <span className="text-muted-foreground font-normal">(optional — keeps old)</span></Label>
                         <Input
-                            placeholder={document.documentNumber || config.numberPlaceholder}
+                            placeholder={document.documentNumber || config?.numberPlaceholder || ''}
                             value={documentNumber}
                             onChange={(e) => setDocumentNumber(e.target.value)}
                         />
@@ -135,7 +137,7 @@ export function RenewDocumentDialog({ document, open, onOpenChange, onSuccess }:
                     {/* Expiry Date */}
                     {/* TODO: consider adding min={today} to prevent past dates in production */}
                     <div className="space-y-2">
-                        <Label htmlFor="expiry">New {config.expiryLabel} <span className="text-red-500">*</span></Label>
+                        <Label htmlFor="expiry">New {config?.expiryLabel || 'Expiry Date'} <span className="text-red-500">*</span></Label>
                         <Input
                             id="expiry"
                             type="date"

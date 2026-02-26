@@ -462,6 +462,40 @@ function DocumentTypesTab() {
 
 // ── Document Type Form ───────────────────────────────────────
 
+function FieldToggle({
+    label,
+    show,
+    required,
+    onShowChange,
+    onRequiredChange,
+}: {
+    label: string;
+    show: boolean;
+    required: boolean;
+    onShowChange: (v: boolean) => void;
+    onRequiredChange: (v: boolean) => void;
+}) {
+    return (
+        <div className="flex items-center justify-between py-1.5">
+            <div className="flex items-center gap-2">
+                <Checkbox checked={show} onCheckedChange={(v) => { onShowChange(v === true); if (!v) onRequiredChange(false); }} />
+                <span className="text-sm">{label}</span>
+            </div>
+            {show && (
+                <Select value={required ? 'required' : 'optional'} onValueChange={(v) => onRequiredChange(v === 'required')}>
+                    <SelectTrigger className="w-28 h-7 text-xs">
+                        <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value="optional">Optional</SelectItem>
+                        <SelectItem value="required">Required</SelectItem>
+                    </SelectContent>
+                </Select>
+            )}
+        </div>
+    );
+}
+
 function DocumentTypeForm({
     initial,
     onSuccess,
@@ -480,9 +514,29 @@ function DocumentTypeForm({
     const [sortOrder, setSortOrder] = useState(initial?.sortOrder ?? 100);
     const [saving, setSaving] = useState(false);
 
+    const [showDocumentNumber, setShowDocumentNumber] = useState(initial?.showDocumentNumber ?? true);
+    const [requireDocumentNumber, setRequireDocumentNumber] = useState(initial?.requireDocumentNumber ?? false);
+    const [showIssueDate, setShowIssueDate] = useState(initial?.showIssueDate ?? true);
+    const [requireIssueDate, setRequireIssueDate] = useState(initial?.requireIssueDate ?? false);
+    const [showExpiryDate, setShowExpiryDate] = useState(initial?.showExpiryDate ?? true);
+    const [requireExpiryDate, setRequireExpiryDate] = useState(initial?.requireExpiryDate ?? false);
+    const [showFile, setShowFile] = useState(initial?.showFile ?? true);
+    const [requireFile, setRequireFile] = useState(initial?.requireFile ?? false);
+
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setSaving(true);
+
+        const fieldConfig = {
+            showDocumentNumber,
+            requireDocumentNumber,
+            showIssueDate,
+            requireIssueDate,
+            showExpiryDate,
+            requireExpiryDate,
+            showFile,
+            requireFile,
+        };
 
         try {
             if (isEditing && initial) {
@@ -492,6 +546,7 @@ function DocumentTypeForm({
                     numberPlaceholder,
                     expiryLabel,
                     sortOrder,
+                    ...fieldConfig,
                 });
                 toast.success('Document type updated');
             } else {
@@ -502,7 +557,8 @@ function DocumentTypeForm({
                     numberPlaceholder,
                     expiryLabel,
                     sortOrder,
-                    hasExpiry: true,
+                    hasExpiry: showExpiryDate,
+                    ...fieldConfig,
                 });
                 toast.success('Document type created');
             }
@@ -516,7 +572,7 @@ function DocumentTypeForm({
     };
 
     return (
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
             {!isEditing && (
                 <div>
                     <label className="text-sm font-medium text-foreground">Slug (internal key)</label>
@@ -581,9 +637,45 @@ function DocumentTypeForm({
                     />
                 </div>
             </div>
+
+            {/* Field Visibility & Requirements */}
+            <div>
+                <label className="text-sm font-medium text-foreground">Fields</label>
+                <div className="mt-1 border rounded-lg p-3 space-y-1">
+                    <FieldToggle
+                        label="Document Number"
+                        show={showDocumentNumber}
+                        required={requireDocumentNumber}
+                        onShowChange={setShowDocumentNumber}
+                        onRequiredChange={setRequireDocumentNumber}
+                    />
+                    <FieldToggle
+                        label="Issue Date"
+                        show={showIssueDate}
+                        required={requireIssueDate}
+                        onShowChange={setShowIssueDate}
+                        onRequiredChange={setRequireIssueDate}
+                    />
+                    <FieldToggle
+                        label="Expiry Date"
+                        show={showExpiryDate}
+                        required={requireExpiryDate}
+                        onShowChange={setShowExpiryDate}
+                        onRequiredChange={setRequireExpiryDate}
+                    />
+                    <FieldToggle
+                        label="File Upload"
+                        show={showFile}
+                        required={requireFile}
+                        onShowChange={setShowFile}
+                        onRequiredChange={setRequireFile}
+                    />
+                </div>
+            </div>
+
             {isSystem && (
                 <p className="text-xs text-muted-foreground bg-yellow-50 dark:bg-yellow-950/20 border border-yellow-200 dark:border-yellow-800 rounded p-2">
-                    This is a system document type. You can edit labels but not metadata fields or slug.
+                    This is a system document type. You can edit labels and field config but not metadata fields or slug.
                 </p>
             )}
             <Button type="submit" disabled={saving} className="w-full">

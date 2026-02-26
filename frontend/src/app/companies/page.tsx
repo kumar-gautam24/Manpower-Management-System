@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -274,7 +275,11 @@ export default function CompaniesPage() {
                                     <Building2 className="h-5 w-5 text-blue-600 dark:text-blue-400" />
                                 </div>
                                 <div>
-                                    <CardTitle className="text-base font-semibold">{company.name}</CardTitle>
+                                    <CardTitle className="text-base font-semibold">
+                                        <Link href={`/companies/${company.id}`} className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                                            {company.name}
+                                        </Link>
+                                    </CardTitle>
                                     <Badge variant="outline" className="mt-1 text-xs">{company.currency || 'AED'}</Badge>
                                 </div>
                             </div>

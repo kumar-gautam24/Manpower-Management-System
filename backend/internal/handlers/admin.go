@@ -37,6 +37,10 @@ func (h *AdminHandler) ListDocumentTypes(w http.ResponseWriter, r *http.Request)
 		SELECT id, doc_type, display_name, is_mandatory, has_expiry,
 		       number_label, number_placeholder, expiry_label, sort_order,
 		       metadata_fields, is_system, is_active,
+		       show_document_number, require_document_number,
+		       show_issue_date, require_issue_date,
+		       show_expiry_date, require_expiry_date,
+		       show_file, require_file,
 		       created_at::text, updated_at::text
 		FROM document_types
 		WHERE is_active = TRUE
@@ -56,6 +60,10 @@ func (h *AdminHandler) ListDocumentTypes(w http.ResponseWriter, r *http.Request)
 			&dt.ID, &dt.DocType, &dt.DisplayName, &dt.IsMandatory, &dt.HasExpiry,
 			&dt.NumberLabel, &dt.NumberPlaceholder, &dt.ExpiryLabel, &dt.SortOrder,
 			&dt.MetadataFields, &dt.IsSystem, &dt.IsActive,
+			&dt.ShowDocumentNumber, &dt.RequireDocumentNumber,
+			&dt.ShowIssueDate, &dt.RequireIssueDate,
+			&dt.ShowExpiryDate, &dt.RequireExpiryDate,
+			&dt.ShowFile, &dt.RequireFile,
 			&dt.CreatedAt, &dt.UpdatedAt,
 		); err != nil {
 			log.Printf("Failed to scan document type: %v", err)
@@ -108,19 +116,39 @@ func (h *AdminHandler) CreateDocumentType(w http.ResponseWriter, r *http.Request
 	err := pool.QueryRow(ctx, `
 		INSERT INTO document_types (doc_type, display_name, is_mandatory, has_expiry,
 		    number_label, number_placeholder, expiry_label, sort_order, metadata_fields,
-		    is_system, is_active)
-		VALUES ($1, $2, FALSE, $3, $4, $5, $6, $7, $8, FALSE, TRUE)
+		    is_system, is_active,
+		    show_document_number, require_document_number,
+		    show_issue_date, require_issue_date,
+		    show_expiry_date, require_expiry_date,
+		    show_file, require_file)
+		VALUES ($1, $2, FALSE, $3, $4, $5, $6, $7, $8, FALSE, TRUE,
+		    COALESCE($9, TRUE), COALESCE($10, FALSE),
+		    COALESCE($11, TRUE), COALESCE($12, FALSE),
+		    COALESCE($13, TRUE), COALESCE($14, FALSE),
+		    COALESCE($15, TRUE), COALESCE($16, FALSE))
 		RETURNING id, doc_type, display_name, is_mandatory, has_expiry,
 		          number_label, number_placeholder, expiry_label, sort_order,
 		          metadata_fields, is_system, is_active,
+		          show_document_number, require_document_number,
+		          show_issue_date, require_issue_date,
+		          show_expiry_date, require_expiry_date,
+		          show_file, require_file,
 		          created_at::text, updated_at::text
 	`, req.DocType, req.DisplayName, req.HasExpiry,
 		req.NumberLabel, req.NumberPlaceholder, req.ExpiryLabel,
 		req.SortOrder, req.MetadataFields,
+		req.ShowDocumentNumber, req.RequireDocumentNumber,
+		req.ShowIssueDate, req.RequireIssueDate,
+		req.ShowExpiryDate, req.RequireExpiryDate,
+		req.ShowFile, req.RequireFile,
 	).Scan(
 		&dt.ID, &dt.DocType, &dt.DisplayName, &dt.IsMandatory, &dt.HasExpiry,
 		&dt.NumberLabel, &dt.NumberPlaceholder, &dt.ExpiryLabel, &dt.SortOrder,
 		&dt.MetadataFields, &dt.IsSystem, &dt.IsActive,
+		&dt.ShowDocumentNumber, &dt.RequireDocumentNumber,
+		&dt.ShowIssueDate, &dt.RequireIssueDate,
+		&dt.ShowExpiryDate, &dt.RequireExpiryDate,
+		&dt.ShowFile, &dt.RequireFile,
 		&dt.CreatedAt, &dt.UpdatedAt,
 	)
 	if err != nil {
@@ -183,18 +211,38 @@ func (h *AdminHandler) UpdateDocumentType(w http.ResponseWriter, r *http.Request
 			expiry_label       = COALESCE($4, expiry_label),
 			sort_order         = COALESCE($5, sort_order),
 			metadata_fields    = COALESCE($6, metadata_fields),
+			show_document_number    = COALESCE($8, show_document_number),
+			require_document_number = COALESCE($9, require_document_number),
+			show_issue_date         = COALESCE($10, show_issue_date),
+			require_issue_date      = COALESCE($11, require_issue_date),
+			show_expiry_date        = COALESCE($12, show_expiry_date),
+			require_expiry_date     = COALESCE($13, require_expiry_date),
+			show_file               = COALESCE($14, show_file),
+			require_file            = COALESCE($15, require_file),
 			updated_at         = NOW()
 		WHERE id = $7
 		RETURNING id, doc_type, display_name, is_mandatory, has_expiry,
 		          number_label, number_placeholder, expiry_label, sort_order,
 		          metadata_fields, is_system, is_active,
+		          show_document_number, require_document_number,
+		          show_issue_date, require_issue_date,
+		          show_expiry_date, require_expiry_date,
+		          show_file, require_file,
 		          created_at::text, updated_at::text
 	`, req.DisplayName, req.NumberLabel, req.NumberPlaceholder,
 		req.ExpiryLabel, req.SortOrder, req.MetadataFields, id,
+		req.ShowDocumentNumber, req.RequireDocumentNumber,
+		req.ShowIssueDate, req.RequireIssueDate,
+		req.ShowExpiryDate, req.RequireExpiryDate,
+		req.ShowFile, req.RequireFile,
 	).Scan(
 		&dt.ID, &dt.DocType, &dt.DisplayName, &dt.IsMandatory, &dt.HasExpiry,
 		&dt.NumberLabel, &dt.NumberPlaceholder, &dt.ExpiryLabel, &dt.SortOrder,
 		&dt.MetadataFields, &dt.IsSystem, &dt.IsActive,
+		&dt.ShowDocumentNumber, &dt.RequireDocumentNumber,
+		&dt.ShowIssueDate, &dt.RequireIssueDate,
+		&dt.ShowExpiryDate, &dt.RequireExpiryDate,
+		&dt.ShowFile, &dt.RequireFile,
 		&dt.CreatedAt, &dt.UpdatedAt,
 	)
 	if err != nil {

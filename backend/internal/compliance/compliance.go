@@ -43,20 +43,26 @@ type MandatoryDocConfig struct {
 	FineCap         float64
 }
 
-// MandatoryDocs lists all 7 mandatory UAE employee document types
-// with their default fine schedules.
+// MandatoryDocs lists the 5 mandatory UAE employee document types
+// with their default fine schedules. Used as a fallback when the
+// document_types table is empty.
 var MandatoryDocs = []MandatoryDocConfig{
 	{DocType: "passport", DisplayName: "Passport", GracePeriodDays: 0, FinePerDay: 0, FineType: FineTypeDaily, FineCap: 0},
 	{DocType: "visa", DisplayName: "Residence Visa", GracePeriodDays: 0, FinePerDay: 50, FineType: FineTypeDaily, FineCap: 0},
 	{DocType: "emirates_id", DisplayName: "Emirates ID", GracePeriodDays: 30, FinePerDay: 20, FineType: FineTypeDaily, FineCap: 1000},
 	{DocType: "work_permit", DisplayName: "Work Permit / Labour Card", GracePeriodDays: 50, FinePerDay: 500, FineType: FineTypeOneTime, FineCap: 500},
-	{DocType: "health_insurance", DisplayName: "Health Insurance", GracePeriodDays: 0, FinePerDay: 500, FineType: FineTypeMonthly, FineCap: 150000},
 	{DocType: "iloe_insurance", DisplayName: "ILOE Insurance", GracePeriodDays: 0, FinePerDay: 400, FineType: FineTypeOneTime, FineCap: 400},
-	{DocType: "medical_fitness", DisplayName: "Medical Fitness Certificate", GracePeriodDays: 0, FinePerDay: 0, FineType: FineTypeDaily, FineCap: 0},
 }
 
 // MandatoryDocCount is a convenience constant.
-const MandatoryDocCount = 7
+const MandatoryDocCount = 5
+
+// displayNames maps doc type slugs to human-readable names for non-mandatory types.
+var displayNames = map[string]string{
+	"health_insurance": "Health Insurance",
+	"medical_fitness":  "Medical Fitness Certificate",
+	"trade_license":    "Trade License",
+}
 
 // ── Status Computation ───────────────────────────────────────────
 
@@ -202,7 +208,9 @@ func DisplayName(docType string) string {
 			return md.DisplayName
 		}
 	}
-	// Fallback: replace underscores with spaces and title-case each word
+	if name, ok := displayNames[docType]; ok {
+		return name
+	}
 	if docType == "" {
 		return "Document"
 	}

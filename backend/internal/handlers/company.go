@@ -80,6 +80,79 @@ func (h *CompanyHandler) List(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ── GetByID ────────────────────────────────────────────────────
+
+// GetByID returns a single company with its employees.
+func (h *CompanyHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		JSONError(w, http.StatusBadRequest, "Company ID is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	pool := h.db.GetPool()
+
+	var company models.Company
+	err := pool.QueryRow(ctx, `
+		SELECT id, name, COALESCE(currency, 'AED'),
+			trade_license_number, establishment_card_number,
+			mohre_category, regulatory_authority,
+			created_at::text, updated_at::text
+		FROM companies WHERE id = $1
+	`, id).Scan(
+		&company.ID, &company.Name, &company.Currency,
+		&company.TradeLicenseNumber, &company.EstablishmentCardNumber,
+		&company.MohreCategory, &company.RegulatoryAuthority,
+		&company.CreatedAt, &company.UpdatedAt,
+	)
+	if err != nil {
+		JSONError(w, http.StatusNotFound, "Company not found")
+		return
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT e.id, e.name, e.trade, e.status, e.photo_url, e.nationality
+		FROM employees e
+		WHERE e.company_id = $1
+		ORDER BY e.name ASC
+	`, id)
+	if err != nil {
+		log.Printf("Error fetching employees for company %s: %v", id, err)
+		JSONError(w, http.StatusInternalServerError, "Failed to fetch employees")
+		return
+	}
+	defer rows.Close()
+
+	type CompanyEmployee struct {
+		ID          string  `json:"id"`
+		Name        string  `json:"name"`
+		Trade       string  `json:"trade"`
+		Status      string  `json:"status"`
+		PhotoURL    *string `json:"photoUrl"`
+		Nationality *string `json:"nationality"`
+	}
+
+	employees := []CompanyEmployee{}
+	for rows.Next() {
+		var emp CompanyEmployee
+		if err := rows.Scan(&emp.ID, &emp.Name, &emp.Trade, &emp.Status, &emp.PhotoURL, &emp.Nationality); err != nil {
+			log.Printf("Error scanning employee: %v", err)
+			continue
+		}
+		employees = append(employees, emp)
+	}
+
+	JSON(w, http.StatusOK, map[string]interface{}{
+		"data": map[string]interface{}{
+			"company":   company,
+			"employees": employees,
+		},
+	})
+}
+
 // ── Create ─────────────────────────────────────────────────────
 
 // createCompanyRequest defines the accepted fields for company creation/update.

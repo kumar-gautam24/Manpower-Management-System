@@ -139,8 +139,9 @@ func main() {
 		// Activity log (read-only)
 		r.Get("/api/activity", activityHandler.List)
 
-		// Companies — list is read-only for all roles
+		// Companies — list and detail are read-only for all roles
 		r.Get("/api/companies", companyHandler.List)
+		r.Get("/api/companies/{id}", companyHandler.GetByID)
 
 		// Read-only employee & document endpoints — accessible to viewers
 		r.Get("/api/employees", employeeHandler.List)

@@ -78,15 +78,71 @@ func scanDocument(scanner interface {
 	return nil
 }
 
+// scanDocumentWithRule scans a document row plus the 4 compliance rule columns and an optional mandatory flag.
+func scanDocumentWithRule(scanner interface {
+	Scan(dest ...interface{}) error
+}, doc *models.Document, rule *ComplianceRule, dtMandatory **bool) error {
+	var issueDateRaw, expiryRaw, metadataRaw string
+	var docNumber *string
+
+	err := scanner.Scan(
+		&doc.ID, &doc.EmployeeID, &doc.DocumentType,
+		&docNumber, &issueDateRaw, &expiryRaw,
+		&doc.GracePeriodDays, &doc.FinePerDay, &doc.FineType, &doc.FineCap,
+		&doc.IsPrimary, &doc.IsMandatory, &metadataRaw,
+		&doc.FileURL, &doc.FileName, &doc.FileSize, &doc.FileType,
+		&doc.LastUpdated, &doc.CreatedAt,
+		&rule.GracePeriodDays, &rule.FinePerDay, &rule.FineType, &rule.FineCap,
+		dtMandatory,
+	)
+	if err != nil {
+		return err
+	}
+
+	doc.DocumentNumber = docNumber
+	if issueDateRaw != "" {
+		doc.IssueDate = &issueDateRaw
+	}
+	if expiryRaw != "" {
+		doc.ExpiryDate = &expiryRaw
+	}
+	if metadataRaw != "" && metadataRaw != "{}" {
+		doc.Metadata = json.RawMessage(metadataRaw)
+	} else {
+		doc.Metadata = json.RawMessage(`{}`)
+	}
+
+	return nil
+}
+
+// ComplianceRule holds the effective compliance rule for a document (from compliance_rules table).
+type ComplianceRule struct {
+	GracePeriodDays int
+	FinePerDay      float64
+	FineType        string
+	FineCap         float64
+}
+
 // enrichWithCompliance computes status, fine, and days fields for a document.
-func enrichWithCompliance(doc *models.Document) models.DocumentWithCompliance {
+// rule can be nil for documents without compliance tracking.
+func enrichWithCompliance(doc *models.Document, rule *ComplianceRule) models.DocumentWithCompliance {
 	now := time.Now()
 	dwc := models.DocumentWithCompliance{
 		Document:    *doc,
 		DisplayName: compliance.DisplayName(doc.DocumentType),
 	}
 
-	// Parse expiry date for computation
+	graceDays := 0
+	finePerDay := 0.0
+	fineType := "daily"
+	fineCap := 0.0
+	if rule != nil {
+		graceDays = rule.GracePeriodDays
+		finePerDay = rule.FinePerDay
+		fineType = rule.FineType
+		fineCap = rule.FineCap
+	}
+
 	var expiryTime *time.Time
 	if doc.ExpiryDate != nil {
 		if t, err := time.Parse("2006-01-02", *doc.ExpiryDate); err == nil {
@@ -94,27 +150,18 @@ func enrichWithCompliance(doc *models.Document) models.DocumentWithCompliance {
 		}
 	}
 
-	// Compute status
 	docNum := ""
 	if doc.DocumentNumber != nil {
 		docNum = *doc.DocumentNumber
 	}
-	dwc.Status = compliance.ComputeStatus(expiryTime, doc.GracePeriodDays, docNum, now)
-
-	// Compute days remaining
+	dwc.Status = compliance.ComputeStatus(expiryTime, graceDays, docNum, now)
 	dwc.DaysRemaining = compliance.DaysRemaining(expiryTime, now)
+	dwc.GraceDaysRemaining = compliance.GraceDaysRemaining(expiryTime, graceDays, now)
+	dwc.DaysInPenalty = compliance.DaysInPenalty(expiryTime, graceDays, now)
 
-	// Compute grace days remaining (only when in_grace)
-	dwc.GraceDaysRemaining = compliance.GraceDaysRemaining(expiryTime, doc.GracePeriodDays, now)
-
-	// Compute days in penalty (only when penalty_active)
-	dwc.DaysInPenalty = compliance.DaysInPenalty(expiryTime, doc.GracePeriodDays, now)
-
-	// Compute fine
 	if expiryTime != nil && dwc.Status == compliance.StatusPenaltyActive {
 		dwc.EstimatedFine = compliance.ComputeFine(
-			*expiryTime, doc.GracePeriodDays,
-			doc.FinePerDay, doc.FineType, doc.FineCap, now,
+			*expiryTime, graceDays, finePerDay, fineType, fineCap, now,
 		)
 	}
 
@@ -163,6 +210,16 @@ func (h *DocumentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		metadata = json.RawMessage(`{}`)
 	}
 
+	// Determine is_mandatory from document_types table (fallback to hardcoded)
+	var isMandatory bool
+	mandErr := pool.QueryRow(ctx,
+		`SELECT COALESCE((SELECT is_mandatory FROM document_types WHERE doc_type = $1 AND is_active = TRUE), $2)`,
+		req.DocumentType, compliance.IsMandatoryType(req.DocumentType),
+	).Scan(&isMandatory)
+	if mandErr != nil {
+		isMandatory = compliance.IsMandatoryType(req.DocumentType)
+	}
+
 	var doc models.Document
 	err := pool.QueryRow(ctx, fmt.Sprintf(`
 		INSERT INTO documents (
@@ -171,16 +228,12 @@ func (h *DocumentHandler) Create(w http.ResponseWriter, r *http.Request) {
 			is_mandatory, metadata,
 			file_url, file_name, file_size, file_type
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		VALUES ($1,$2,$3,$4,$5, 0, 0, 'daily', 0, $6,$7,$8,$9,$10,$11)
 		RETURNING %s
 	`, docRetCols),
 		employeeID, req.DocumentType,
 		req.DocumentNumber, req.IssueDate, req.ExpiryDate,
-		nilIntDefault(req.GracePeriodDays, 0),
-		nilFloat64Default(req.FinePerDay, 0),
-		nilStringDefault(req.FineType, "daily"),
-		nilFloat64Default(req.FineCap, 0),
-		compliance.IsMandatoryType(req.DocumentType),
+		isMandatory,
 		string(metadata),
 		req.FileURL, req.FileName, req.FileSize, req.FileType,
 	)
@@ -196,7 +249,25 @@ func (h *DocumentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		"type": doc.DocumentType, "employeeId": employeeID,
 	})
 
-	result := enrichWithCompliance(&doc)
+	// Fetch the effective compliance rule for this doc type
+	var rule ComplianceRule
+	_ = pool.QueryRow(ctx, `
+		SELECT COALESCE(cr.grace_period_days, gr.grace_period_days, 0),
+		       COALESCE(cr.fine_per_day, gr.fine_per_day, 0),
+		       COALESCE(cr.fine_type, gr.fine_type, 'daily'),
+		       COALESCE(cr.fine_cap, gr.fine_cap, 0)
+		FROM employees emp
+		LEFT JOIN compliance_rules cr ON cr.doc_type = $2 AND cr.company_id = emp.company_id
+		LEFT JOIN compliance_rules gr ON gr.doc_type = $2 AND gr.company_id IS NULL
+		WHERE emp.id = $1
+	`, employeeID, doc.DocumentType).Scan(&rule.GracePeriodDays, &rule.FinePerDay, &rule.FineType, &rule.FineCap)
+
+	var rulePtr *ComplianceRule
+	if rule.FinePerDay > 0 || rule.GracePeriodDays > 0 {
+		rulePtr = &rule
+	}
+
+	result := enrichWithCompliance(&doc, rulePtr)
 	JSON(w, http.StatusCreated, map[string]interface{}{
 		"data":    result,
 		"message": "Document created successfully",
@@ -221,11 +292,21 @@ func (h *DocumentHandler) ListByEmployee(w http.ResponseWriter, r *http.Request)
 
 	pool := h.db.GetPool()
 
+	// JOIN compliance_rules to get grace/fine values at query time
 	rows, err := pool.Query(ctx, fmt.Sprintf(`
-		SELECT %s
+		SELECT %s,
+			COALESCE(cr.grace_period_days, gr.grace_period_days, 0),
+			COALESCE(cr.fine_per_day, gr.fine_per_day, 0),
+			COALESCE(cr.fine_type, gr.fine_type, 'daily'),
+			COALESCE(cr.fine_cap, gr.fine_cap, 0),
+			dt.is_mandatory
 		FROM documents d
+		LEFT JOIN employees e ON d.employee_id = e.id
+		LEFT JOIN compliance_rules cr ON cr.doc_type = d.document_type AND cr.company_id = e.company_id
+		LEFT JOIN compliance_rules gr ON gr.doc_type = d.document_type AND gr.company_id IS NULL
+		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
 		WHERE d.employee_id = $1
-		ORDER BY d.is_mandatory DESC, d.document_type ASC, d.created_at DESC
+		ORDER BY COALESCE(dt.is_mandatory, d.is_mandatory) DESC, COALESCE(dt.sort_order, 100) ASC, d.created_at DESC
 	`, docCols), employeeID)
 	if err != nil {
 		log.Printf("Error fetching documents: %v", err)
@@ -237,14 +318,22 @@ func (h *DocumentHandler) ListByEmployee(w http.ResponseWriter, r *http.Request)
 	documents := []models.DocumentWithCompliance{}
 	for rows.Next() {
 		var doc models.Document
-		if err := scanDocument(rows, &doc); err != nil {
+		var rule ComplianceRule
+		var dtMandatory *bool
+		if err := scanDocumentWithRule(rows, &doc, &rule, &dtMandatory); err != nil {
 			log.Printf("Error scanning document: %v", err)
 			continue
 		}
-		documents = append(documents, enrichWithCompliance(&doc))
+		if dtMandatory != nil {
+			doc.IsMandatory = *dtMandatory
+		}
+		var rulePtr *ComplianceRule
+		if rule.FinePerDay > 0 || rule.GracePeriodDays > 0 {
+			rulePtr = &rule
+		}
+		documents = append(documents, enrichWithCompliance(&doc, rulePtr))
 	}
 
-	// Calculate completion stats for mandatory docs
 	mandatoryTotal := 0
 	mandatoryComplete := 0
 	for _, doc := range documents {
@@ -281,17 +370,24 @@ func (h *DocumentHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	pool := h.db.GetPool()
 
 	row := pool.QueryRow(ctx, fmt.Sprintf(`
-		SELECT %s, e.name AS employee_name, c.name AS company_name
+		SELECT %s,
+			COALESCE(cr.grace_period_days, gr.grace_period_days, 0),
+			COALESCE(cr.fine_per_day, gr.fine_per_day, 0),
+			COALESCE(cr.fine_type, gr.fine_type, 'daily'),
+			COALESCE(cr.fine_cap, gr.fine_cap, 0),
+			e.name AS employee_name, c.name AS company_name
 		FROM documents d
 		JOIN employees e ON d.employee_id = e.id
 		JOIN companies c ON e.company_id = c.id
+		LEFT JOIN compliance_rules cr ON cr.doc_type = d.document_type AND cr.company_id = e.company_id
+		LEFT JOIN compliance_rules gr ON gr.doc_type = d.document_type AND gr.company_id IS NULL
 		WHERE d.id = $1
 	`, docCols), id)
 
 	var doc models.Document
+	var rule ComplianceRule
 	var employeeName, companyName string
 
-	// We need a custom scan here because of the extra joined columns
 	var issueDateRaw, expiryRaw, metadataRaw string
 	var docNumber *string
 	err := row.Scan(
@@ -301,6 +397,7 @@ func (h *DocumentHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		&doc.IsPrimary, &doc.IsMandatory, &metadataRaw,
 		&doc.FileURL, &doc.FileName, &doc.FileSize, &doc.FileType,
 		&doc.LastUpdated, &doc.CreatedAt,
+		&rule.GracePeriodDays, &rule.FinePerDay, &rule.FineType, &rule.FineCap,
 		&employeeName, &companyName,
 	)
 	if err != nil {
@@ -318,7 +415,12 @@ func (h *DocumentHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	}
 	doc.Metadata = json.RawMessage(metadataRaw)
 
-	result := enrichWithCompliance(&doc)
+	var rulePtr *ComplianceRule
+	if rule.FinePerDay > 0 || rule.GracePeriodDays > 0 {
+		rulePtr = &rule
+	}
+
+	result := enrichWithCompliance(&doc, rulePtr)
 	JSON(w, http.StatusOK, map[string]interface{}{
 		"data": map[string]interface{}{
 			"document":     result,
@@ -455,7 +557,25 @@ func (h *DocumentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		"type": doc.DocumentType,
 	})
 
-	result := enrichWithCompliance(&doc)
+	// Fetch compliance rule for enrichment
+	var rule ComplianceRule
+	_ = pool.QueryRow(ctx, `
+		SELECT COALESCE(cr.grace_period_days, gr.grace_period_days, 0),
+		       COALESCE(cr.fine_per_day, gr.fine_per_day, 0),
+		       COALESCE(cr.fine_type, gr.fine_type, 'daily'),
+		       COALESCE(cr.fine_cap, gr.fine_cap, 0)
+		FROM employees emp
+		LEFT JOIN compliance_rules cr ON cr.doc_type = $2 AND cr.company_id = emp.company_id
+		LEFT JOIN compliance_rules gr ON gr.doc_type = $2 AND gr.company_id IS NULL
+		WHERE emp.id = $1
+	`, doc.EmployeeID, doc.DocumentType).Scan(&rule.GracePeriodDays, &rule.FinePerDay, &rule.FineType, &rule.FineCap)
+
+	var rulePtr *ComplianceRule
+	if rule.FinePerDay > 0 || rule.GracePeriodDays > 0 {
+		rulePtr = &rule
+	}
+
+	result := enrichWithCompliance(&doc, rulePtr)
 	JSON(w, http.StatusOK, map[string]interface{}{
 		"data":    result,
 		"message": "Document updated successfully",
@@ -672,12 +792,11 @@ func (h *DocumentHandler) Renew(w http.ResponseWriter, r *http.Request) {
 			is_primary, is_mandatory, metadata,
 			file_url, file_name, file_size, file_type
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		VALUES ($1,$2,$3,$4,$5, 0, 0, 'daily', 0, $6,$7,$8,$9,$10,$11,$12)
 		RETURNING %s
 	`, docRetCols),
 		oldDoc.EmployeeID, oldDoc.DocumentType,
 		docNumber, issueDate, req.ExpiryDate,
-		oldDoc.GracePeriodDays, oldDoc.FinePerDay, oldDoc.FineType, oldDoc.FineCap,
 		oldDoc.IsPrimary, oldDoc.IsMandatory, string(metadata),
 		fileURL, fileName, fileSize, fileType,
 	)
@@ -705,7 +824,25 @@ func (h *DocumentHandler) Renew(w http.ResponseWriter, r *http.Request) {
 		"previousDocId": oldID, "type": oldDoc.DocumentType, "newExpiry": req.ExpiryDate,
 	})
 
-	result := enrichWithCompliance(&newDoc)
+	// Fetch compliance rule for enrichment
+	var rule ComplianceRule
+	_ = pool.QueryRow(ctx, `
+		SELECT COALESCE(cr.grace_period_days, gr.grace_period_days, 0),
+		       COALESCE(cr.fine_per_day, gr.fine_per_day, 0),
+		       COALESCE(cr.fine_type, gr.fine_type, 'daily'),
+		       COALESCE(cr.fine_cap, gr.fine_cap, 0)
+		FROM employees emp
+		LEFT JOIN compliance_rules cr ON cr.doc_type = $2 AND cr.company_id = emp.company_id
+		LEFT JOIN compliance_rules gr ON gr.doc_type = $2 AND gr.company_id IS NULL
+		WHERE emp.id = $1
+	`, newDoc.EmployeeID, newDoc.DocumentType).Scan(&rule.GracePeriodDays, &rule.FinePerDay, &rule.FineType, &rule.FineCap)
+
+	var rulePtr *ComplianceRule
+	if rule.FinePerDay > 0 || rule.GracePeriodDays > 0 {
+		rulePtr = &rule
+	}
+
+	result := enrichWithCompliance(&newDoc, rulePtr)
 	JSON(w, http.StatusCreated, map[string]interface{}{
 		"data":    result,
 		"message": "Document renewed successfully",

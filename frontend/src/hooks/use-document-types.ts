@@ -1,49 +1,28 @@
-import { useState, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import type { AdminDocumentType } from '@/types';
-import { DOC_TYPES, DOC_TYPE_CONFIG, MANDATORY_DOC_TYPES } from '@/lib/constants';
-import type { DocTypeConfig } from '@/lib/constants';
 
 /**
- * Fetches document types from the DB.
- * Falls back to hardcoded constants if the API is unavailable.
+ * Fetches document types from the DB via React Query.
+ * Cached for 5 minutes so forms don't refetch on every render.
  */
 export function useDocumentTypes() {
-    const [types, setTypes] = useState<AdminDocumentType[]>([]);
-    const [loading, setLoading] = useState(true);
-
-    useEffect(() => {
-        api.documentTypes.list()
-            .then(res => setTypes(res.data))
-            .catch(() => {
-                // Fallback to hardcoded constants
-                setTypes(convertConstantsToDocumentTypes());
-            })
-            .finally(() => setLoading(false));
-    }, []);
+    const { data: types = [], isLoading: loading } = useQuery<AdminDocumentType[]>({
+        queryKey: ['document-types'],
+        queryFn: async () => {
+            const res = await api.documentTypes.list();
+            return res.data;
+        },
+        staleTime: 5 * 60 * 1000,
+        gcTime: 10 * 60 * 1000,
+    });
 
     return { types, loading };
 }
 
-/** Convert hardcoded constants to the AdminDocumentType shape (for fallback). */
-function convertConstantsToDocumentTypes(): AdminDocumentType[] {
-    return Object.entries(DOC_TYPES).map(([key, displayName], index) => {
-        const config: DocTypeConfig = DOC_TYPE_CONFIG[key] || DOC_TYPE_CONFIG.other;
-        return {
-            id: key,
-            docType: key,
-            displayName,
-            isMandatory: (MANDATORY_DOC_TYPES as readonly string[]).includes(key),
-            hasExpiry: config.hasExpiry,
-            numberLabel: config.numberLabel,
-            numberPlaceholder: config.numberPlaceholder,
-            expiryLabel: config.expiryLabel,
-            sortOrder: (index + 1) * 10,
-            metadataFields: config.metadataFields,
-            isSystem: true,
-            isActive: true,
-            createdAt: '',
-            updatedAt: '',
-        };
-    });
+/** Look up a single document type config by its slug. */
+export function useDocumentTypeConfig(docType: string) {
+    const { types, loading } = useDocumentTypes();
+    const config = types.find(t => t.docType === docType);
+    return { config, loading };
 }

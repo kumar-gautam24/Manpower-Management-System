@@ -240,10 +240,6 @@ export interface CreateDocumentRequest {
     documentNumber?: string;
     issueDate?: string;
     expiryDate?: string;
-    gracePeriodDays?: number;
-    finePerDay?: number;
-    fineType?: string;
-    fineCap?: number;
     metadata?: Record<string, unknown>;
     fileUrl: string;
     fileName: string;
@@ -288,6 +284,16 @@ export interface AdminDocumentType {
     metadataFields: MetadataFieldDef[];
     isSystem: boolean;
     isActive: boolean;
+
+    showDocumentNumber: boolean;
+    requireDocumentNumber: boolean;
+    showIssueDate: boolean;
+    requireIssueDate: boolean;
+    showExpiryDate: boolean;
+    requireExpiryDate: boolean;
+    showFile: boolean;
+    requireFile: boolean;
+
     createdAt: string;
     updatedAt: string;
 }

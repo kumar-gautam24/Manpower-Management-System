@@ -154,6 +154,8 @@ export const api = {
     // ── Companies ─────────────────────────────────────────────
     companies: {
         list: () => fetcher<{ data: Company[] }>('/api/companies'),
+        getById: (id: string) =>
+            fetcher<{ data: { company: Company; employees: { id: string; name: string; trade: string; status: string; photoUrl?: string | null; nationality?: string | null }[] } }>(`/api/companies/${id}`),
         create: (data: CreateCompanyRequest) =>
             fetcher<{ data: Company; message: string }>('/api/companies', {
                 method: 'POST',
@@ -345,6 +347,10 @@ export const api = {
             docType: string; displayName: string; hasExpiry?: boolean;
             numberLabel?: string; numberPlaceholder?: string; expiryLabel?: string;
             sortOrder?: number; metadataFields?: unknown[];
+            showDocumentNumber?: boolean; requireDocumentNumber?: boolean;
+            showIssueDate?: boolean; requireIssueDate?: boolean;
+            showExpiryDate?: boolean; requireExpiryDate?: boolean;
+            showFile?: boolean; requireFile?: boolean;
         }) =>
             fetcher<{ data: AdminDocumentType; message: string }>('/api/admin/document-types', {
                 method: 'POST',

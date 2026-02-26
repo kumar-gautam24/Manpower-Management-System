@@ -42,8 +42,11 @@ func runCycle(db database.Service) {
 	rows, err := pool.Query(ctx, `
 		SELECT
 			d.id, d.employee_id, d.document_type, d.expiry_date,
-			d.grace_period_days, d.fine_per_day, d.document_number,
-			d.fine_type, d.fine_cap,
+			COALESCE(cr.grace_period_days, gr.grace_period_days, d.grace_period_days) AS grace_period_days,
+			COALESCE(cr.fine_per_day, gr.fine_per_day, d.fine_per_day) AS fine_per_day,
+			d.document_number,
+			COALESCE(cr.fine_type, gr.fine_type, d.fine_type) AS fine_type,
+			COALESCE(cr.fine_cap, gr.fine_cap, d.fine_cap) AS fine_cap,
 			e.name AS employee_name,
 			c.name AS company_name,
 			u.id   AS user_id
@@ -51,6 +54,8 @@ func runCycle(db database.Service) {
 		JOIN employees e ON d.employee_id = e.id
 		JOIN companies c ON e.company_id  = c.id
 		JOIN users     u ON c.user_id     = u.id
+		LEFT JOIN compliance_rules cr ON cr.doc_type = d.document_type AND cr.company_id = e.company_id
+		LEFT JOIN compliance_rules gr ON gr.doc_type = d.document_type AND gr.company_id IS NULL
 		WHERE d.expiry_date IS NOT NULL
 		  AND d.expiry_date <= (NOW() + INTERVAL '30 days')
 		  AND d.file_url    IS NOT NULL
