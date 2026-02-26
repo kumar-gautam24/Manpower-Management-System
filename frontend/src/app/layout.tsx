@@ -4,6 +4,7 @@ import './globals.css';
 import { Toaster } from '@/components/ui/sonner';
 import { ThemeProvider } from '@/context/theme-context';
 import { AuthProvider } from '@/context/auth-context';
+import { QueryProvider } from '@/components/providers';
 import AppLayout from '@/components/layout/app-layout';
 
 const font = Plus_Jakarta_Sans({
@@ -25,10 +26,12 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body className={`${font.className} antialiased`}>
         <ThemeProvider>
-          <AuthProvider>
-            <AppLayout>{children}</AppLayout>
-            <Toaster richColors />
-          </AuthProvider>
+          <QueryProvider>
+            <AuthProvider>
+              <AppLayout>{children}</AppLayout>
+              <Toaster richColors />
+            </AuthProvider>
+          </QueryProvider>
         </ThemeProvider>
       </body>
     </html>
