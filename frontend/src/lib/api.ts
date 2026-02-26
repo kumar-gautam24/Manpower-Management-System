@@ -63,7 +63,9 @@ async function fetcher<T>(
 
         if (response.status === 401 && typeof window !== 'undefined') {
             localStorage.removeItem('token');
-            window.location.href = '/login';
+            // Don't redirect here — AuthContext detects the null user and
+            // handles the redirect to /login. Having two redirect sources
+            // caused race conditions where sometimes nothing happened.
             throw new ApiClientError('Session expired', 401);
         }
 

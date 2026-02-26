@@ -1,17 +1,15 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { getUser, User } from '@/lib/auth';
+import { useAuth } from '@/context/auth-context';
 
+/**
+ * useUser — convenience hook for accessing user data and role.
+ * Delegates entirely to AuthContext (single source of truth).
+ *
+ * Before: independently decoded JWT from localStorage (caused role leaking).
+ * After: reads fresh user data from AuthContext (set by /auth/me response).
+ */
 export function useUser() {
-    const [user, setUser] = useState<User | null>(null);
-    const [loading, setLoading] = useState(true);
-
-    useEffect(() => {
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        setUser(getUser());
-        setLoading(false);
-    }, []);
-
-    return { user, loading, isAdmin: user?.role === 'admin' };
+    const { user, loading, isAdmin } = useAuth();
+    return { user, loading, isAdmin };
 }

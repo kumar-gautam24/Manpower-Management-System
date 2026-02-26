@@ -1,0 +1,212 @@
+# Cloudflare R2 Integration Plan
+
+## Current Architecture
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend
+    participant BE as Go Backend
+    participant FS as Local Disk (./uploads)
+    participant DB as Neon DB
+
+    FE->>BE: POST /api/upload (multipart file)
+    BE->>FS: store.Save("documents/123_visa.pdf")
+    FS-->>BE: { url: "backend.onrender.com/api/files/documents/123_visa.pdf" }
+    BE-->>FE: { url, fileName, fileSize, fileType }
+    FE->>BE: POST /api/documents (fileUrl saved in DB)
+    BE->>DB: INSERT INTO documents (..., file_url)
+
+    Note over FE,FS: Downloading:
+    FE->>BE: GET /api/files/documents/123_visa.pdf
+    BE->>FS: http.ServeFile() reads from disk
+    BE-->>FE: File bytes
+```
+
+**Problem**: Files on Render's local disk → lost on every redeploy.
+
+---
+
+## Target Architecture (with R2)
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend
+    participant BE as Go Backend
+    participant R2 as Cloudflare R2
+    participant DB as Neon DB
+
+    FE->>BE: POST /api/upload (multipart file)
+    BE->>R2: PutObject("documents/123_visa.pdf")
+    R2-->>BE: { url: "pub-xxx.r2.dev/documents/123_visa.pdf" }
+    BE-->>FE: { url, fileName, fileSize, fileType }
+    FE->>BE: POST /api/documents (fileUrl saved in DB)
+    BE->>DB: INSERT INTO documents (..., file_url)
+
+    Note over FE,R2: Downloading (direct, no backend):
+    FE->>R2: GET pub-xxx.r2.dev/documents/123_visa.pdf
+    R2-->>FE: File bytes (CDN-cached, fast)
+```
+
+**Key change**: Frontend downloads files **directly from R2** (CDN), not through the Go backend. Faster and no backend load.
+
+---
+
+## Proposed Changes
+
+### Backend (3 files)
+
+---
+
+#### [NEW] [r2.go](file:///d:/Manpower-Management-System/backend/internal/storage/r2.go)
+
+New `R2Store` implementing the existing [Store](file:///d:/Manpower-Management-System/backend/internal/storage/storage.go#25-37) interface using AWS SDK v2:
+
+- `NewR2Store(accountID, accessKey, secretKey, bucket, publicURL)` — initializes S3 client with R2 endpoint
+- [Save()](file:///d:/Manpower-Management-System/backend/internal/storage/storage.go#26-29) — calls `PutObject` to upload file to R2 bucket
+- [Delete()](file:///d:/Manpower-Management-System/backend/internal/handlers/company.go#221-246) — calls `DeleteObject` to remove file from R2
+- [URL()](file:///d:/Manpower-Management-System/backend/internal/storage/local.go#75-80) — returns `publicURL + "/" + path` (direct R2 CDN link)
+
+**Dependency**: `github.com/aws/aws-sdk-go-v2` (S3-compatible, official Cloudflare-recommended SDK)
+
+---
+
+#### [MODIFY] [main.go](file:///d:/Manpower-Management-System/backend/cmd/api/main.go)
+
+Switch storage init based on `STORAGE` env var:
+
+```diff
+- fileStore, err := storage.NewLocalStore(cfg.Upload.Dir, cfg.Upload.BaseURL)
++ var fileStore storage.Store
++ if os.Getenv("STORAGE") == "r2" {
++     fileStore, err = storage.NewR2Store(
++         os.Getenv("R2_ACCOUNT_ID"),
++         os.Getenv("R2_ACCESS_KEY"),
++         os.Getenv("R2_SECRET_KEY"),
++         os.Getenv("R2_BUCKET"),
++         os.Getenv("R2_PUBLIC_URL"),
++     )
++ } else {
++     fileStore, err = storage.NewLocalStore(cfg.Upload.Dir, cfg.Upload.BaseURL)
++ }
+```
+
+> [!NOTE]
+> Local storage still works for development. Only Render uses R2.
+
+---
+
+#### [MODIFY] [upload.go](file:///d:/Manpower-Management-System/backend/internal/handlers/upload.go)
+
+[ServeFile()](file:///d:/Manpower-Management-System/backend/internal/handlers/upload.go#99-112) currently reads from local disk:
+```go
+http.ServeFile(w, r, filepath.Join("uploads", filepath.Clean(filePath)))
+```
+
+With R2, files are served via public R2 URLs — **the ServeFile endpoint becomes a redirect fallback**:
+
+```diff
+  func (h *UploadHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
+      filePath := strings.TrimPrefix(r.URL.Path, "/api/files/")
++     // If using R2, redirect to the public URL
++     if url := h.store.URL(filePath); strings.HasPrefix(url, "https://") {
++         http.Redirect(w, r, url, http.StatusTemporaryRedirect)
++         return
++     }
+      http.ServeFile(w, r, filepath.Join("uploads", filepath.Clean(filePath)))
+  }
+```
+
+---
+
+### Frontend (2 files)
+
+---
+
+#### [MODIFY] [next.config.ts](file:///d:/Manpower-Management-System/frontend/next.config.ts)
+
+Add R2 domain to allowed image sources for `next/image` optimization:
+
+```diff
+  const nextConfig: NextConfig = {
++   images: {
++     remotePatterns: [
++       { protocol: 'https', hostname: '*.r2.dev' },
++       { protocol: 'https', hostname: '*.onrender.com' },
++     ],
++   },
+    reactCompiler: true,
+  };
+```
+
+---
+
+#### [MODIFY] [page.tsx](file:///d:/Manpower-Management-System/frontend/src/app/employees/[id]/page.tsx)
+
+Currently displays document files with:
+```tsx
+<a href={doc.fileUrl.startsWith('http') ? doc.fileUrl : `${doc.fileUrl}`}>
+```
+
+This **already works** — R2 URLs start with `https://` so no change needed here.
+
+For employee photos (if displayed as `<img>`), switch to `next/image` for caching:
+```diff
+- <img src={employee.photoUrl} />
++ import Image from 'next/image';
++ <Image src={employee.photoUrl} width={80} height={80} alt={employee.name} />
+```
+
+`next/image` provides:
+- Automatic WebP conversion (smaller files)
+- Browser-level caching
+- Lazy loading
+- Responsive sizing
+
+---
+
+## Cloudflare R2 Setup Steps
+
+1. Sign in to [dash.cloudflare.com](https://dash.cloudflare.com)
+2. Go to **R2** → **Create Bucket** → Name: `manpower-docs`
+3. Bucket Settings → **Public Access** → Enable **r2.dev subdomain** → copy the public URL
+4. Go to **R2** → **Manage R2 API Tokens** → **Create API Token** → "Object Read & Write"
+5. Copy: **Account ID**, **Access Key ID**, **Secret Access Key**
+
+---
+
+## Environment Variables (add to Render)
+
+| Key | Value |
+|---|---|
+| `STORAGE` | `r2` |
+| `R2_ACCOUNT_ID` | *(from Cloudflare dashboard)* |
+| `R2_ACCESS_KEY` | *(from API token)* |
+| `R2_SECRET_KEY` | *(from API token)* |
+| `R2_BUCKET` | `manpower-docs` |
+| `R2_PUBLIC_URL` | `https://pub-xxx.r2.dev` |
+
+---
+
+## What Doesn't Change
+
+- ✅ [DocumentHandler](file:///d:/Manpower-Management-System/backend/internal/handlers/document.go#20-23) (Create/Update/Delete/Renew) — no changes
+- ✅ `storage.Store` interface — no changes
+- ✅ `UploadHandler.Upload()` — no changes (uses `Store.Save`)
+- ✅ Frontend document dialogs — no changes (already use `fileUrl`)
+- ✅ Database schema — no changes (URLs are just strings)
+- ✅ Local dev workflow — `STORAGE` env var absent = uses LocalStore
+
+---
+
+## Verification Plan
+
+### Automated
+- `go build ./...` — backend compiles
+- `npm run build` — frontend builds
+
+### Manual
+1. Upload a PDF document on the live app
+2. Verify file appears in R2 bucket (Cloudflare dashboard)
+3. Verify file URL in DB points to `pub-xxx.r2.dev/...`
+4. Click "View Document" in frontend → file loads from R2 CDN
+5. Redeploy Render → verify file still accessible (persistence test)

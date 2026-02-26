@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 
 interface User {
@@ -14,6 +14,7 @@ interface AuthContextValue {
     user: User | null;
     token: string | null;
     loading: boolean;
+    isAdmin: boolean;
     login: (email: string, password: string) => Promise<void>;
     register: (name: string, email: string, password: string) => Promise<void>;
     logout: () => void;
@@ -28,8 +29,9 @@ const PUBLIC_PATHS = ['/login', '/register'];
 
 /**
  * AuthProvider manages authentication state across the entire app.
- * On mount, checks for a stored JWT token and validates it.
- * Redirects unauthenticated users to /login automatically.
+ * - Single source of truth for user, token, and role
+ * - Cross-tab sync via storage event listener
+ * - Redirects unauthenticated users to /login automatically
  */
 export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [user, setUser] = useState<User | null>(null);
@@ -37,6 +39,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [loading, setLoading] = useState(true);
     const router = useRouter();
     const pathname = usePathname();
+    // Guard against redirect loops and double-validation
+    const isValidating = useRef(false);
+
+    // Validate a token against /auth/me and update state
+    const validateToken = useCallback(async (storedToken: string) => {
+        if (isValidating.current) return;
+        isValidating.current = true;
+
+        try {
+            const res = await fetch(`${API_BASE}/api/auth/me`, {
+                headers: { Authorization: `Bearer ${storedToken}` },
+            });
+
+            if (!res.ok) {
+                // Token expired or invalid — clear everything
+                localStorage.removeItem('token');
+                setToken(null);
+                setUser(null);
+                return;
+            }
+
+            const userData: User = await res.json();
+            setUser(userData);
+            setToken(storedToken);
+        } catch {
+            localStorage.removeItem('token');
+            setToken(null);
+            setUser(null);
+        } finally {
+            isValidating.current = false;
+            setLoading(false);
+        }
+    }, []);
 
     // Validate stored token on initial load
     useEffect(() => {
@@ -45,25 +80,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setLoading(false);
             return;
         }
+        validateToken(storedToken);
+    }, [validateToken]);
 
-        // Verify token is still valid by hitting /auth/me
-        fetch(`${API_BASE}/api/auth/me`, {
-            headers: { Authorization: `Bearer ${storedToken}` },
-        })
-            .then((res) => {
-                if (!res.ok) throw new Error('Invalid token');
-                return res.json();
-            })
-            .then((userData: User) => {
-                setUser(userData);
-                setToken(storedToken);
-            })
-            .catch(() => {
-                // Token expired or invalid — clear it
-                localStorage.removeItem('token');
-            })
-            .finally(() => setLoading(false));
-    }, []);
+    // Cross-tab sync: detect login/logout in other tabs
+    useEffect(() => {
+        const handleStorageChange = (e: StorageEvent) => {
+            if (e.key !== 'token') return;
+
+            if (!e.newValue) {
+                // Another tab logged out
+                setToken(null);
+                setUser(null);
+                router.replace('/login');
+            } else if (e.newValue !== token) {
+                // Another tab logged in (possibly as different user)
+                validateToken(e.newValue);
+            }
+        };
+
+        window.addEventListener('storage', handleStorageChange);
+        return () => window.removeEventListener('storage', handleStorageChange);
+    }, [token, router, validateToken]);
 
     // Redirect unauthenticated users to login
     useEffect(() => {
@@ -118,8 +156,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         router.push('/login');
     }, [router]);
 
+    const isAdmin = user?.role === 'admin';
+
     return (
-        <AuthContext.Provider value={{ user, token, loading, login, register, logout }}>
+        <AuthContext.Provider value={{ user, token, loading, isAdmin, login, register, logout }}>
             {children}
         </AuthContext.Provider>
     );

@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"golang.org/x/time/rate"
 
 	"manpower-backend/internal/config"
 	"manpower-backend/internal/cron"
@@ -34,10 +35,26 @@ func main() {
 	db := database.New(&cfg.DB)
 	defer db.Close()
 
-	// 3. Initialize file storage (local filesystem — swap to S3 by changing this line)
-	fileStore, err := storage.NewLocalStore(cfg.Upload.Dir, cfg.Upload.BaseURL)
-	if err != nil {
-		log.Fatalf("Failed to initialize file storage: %v", err)
+	// 3. Initialize file storage (R2 in production, local filesystem for dev)
+	var fileStore storage.Store
+	if os.Getenv("STORAGE") == "r2" {
+		fileStore, err = storage.NewR2Store(
+			os.Getenv("R2_ACCOUNT_ID"),
+			os.Getenv("R2_ACCESS_KEY"),
+			os.Getenv("R2_SECRET_KEY"),
+			os.Getenv("R2_BUCKET"),
+			os.Getenv("R2_PUBLIC_URL"),
+		)
+		if err != nil {
+			log.Fatalf("Failed to initialize R2 storage: %v", err)
+		}
+		log.Println("Using Cloudflare R2 storage")
+	} else {
+		fileStore, err = storage.NewLocalStore(cfg.Upload.Dir, cfg.Upload.BaseURL)
+		if err != nil {
+			log.Fatalf("Failed to initialize local storage: %v", err)
+		}
+		log.Println("Using local file storage")
 	}
 
 	// 4. Set up router with global middleware
@@ -84,10 +101,17 @@ func main() {
 	})
 
 	// Auth routes — public (login and register don't need a token)
-	r.Post("/api/auth/register", authHandler.Register)
-	r.Post("/api/auth/login", authHandler.Login)
+	// Rate-limited to prevent brute-force and registration spam
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.RateLimit(rate.Every(12*time.Second), 5)) // ~5 req/min per IP
+		r.Post("/api/auth/login", authHandler.Login)
+	})
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.RateLimit(rate.Every(20*time.Second), 3)) // ~3 req/min per IP
+		r.Post("/api/auth/register", authHandler.Register)
+	})
 
-	// Serve uploaded files (local storage only — replace with S3 URLs in production)
+	// Serve uploaded files (local storage serves from disk; R2 redirects to CDN)
 	r.Get("/api/files/*", uploadHandler.ServeFile)
 
 	// 7. Protected routes (require valid JWT)

@@ -96,8 +96,9 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, info)
 }
 
-// ServeFile serves uploaded files from local storage.
-// This endpoint is only needed for local storage — S3 uses pre-signed URLs instead.
+// ServeFile serves uploaded files.
+// For R2 storage, redirects to the public CDN URL.
+// For local storage, serves from disk.
 func (h *UploadHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
 	// Extract the full file path from the URL (everything after /api/files/)
 	filePath := strings.TrimPrefix(r.URL.Path, "/api/files/")
@@ -106,7 +107,13 @@ func (h *UploadHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Serve using Go's built-in file server (handles Content-Type, caching, etc.)
+	// If the store returns an https:// URL (R2), redirect to CDN
+	if url := h.store.URL(filePath); strings.HasPrefix(url, "https://") {
+		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+		return
+	}
+
+	// Otherwise serve from local disk
 	http.ServeFile(w, r, filepath.Join("uploads", filepath.Clean(filePath)))
 }
 
