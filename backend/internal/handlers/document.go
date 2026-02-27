@@ -31,15 +31,13 @@ func NewDocumentHandler(db database.Service) *DocumentHandler {
 
 const docCols = `d.id, d.employee_id, d.document_type,
 	d.document_number, COALESCE(d.issue_date::text, ''), COALESCE(d.expiry_date::text, ''),
-	d.grace_period_days, d.fine_per_day, d.fine_type, d.fine_cap,
-	d.is_primary, d.is_mandatory, COALESCE(d.metadata::text, '{}'),
+	d.is_primary, COALESCE(d.metadata::text, '{}'),
 	d.file_url, d.file_name, d.file_size, d.file_type,
 	d.last_updated, d.created_at`
 
 const docRetCols = `id, employee_id, document_type,
 	document_number, COALESCE(issue_date::text, ''), COALESCE(expiry_date::text, ''),
-	grace_period_days, fine_per_day, fine_type, fine_cap,
-	is_primary, is_mandatory, COALESCE(metadata::text, '{}'),
+	is_primary, COALESCE(metadata::text, '{}'),
 	file_url, file_name, file_size, file_type,
 	last_updated, created_at`
 
@@ -53,8 +51,7 @@ func scanDocument(scanner interface {
 	err := scanner.Scan(
 		&doc.ID, &doc.EmployeeID, &doc.DocumentType,
 		&docNumber, &issueDateRaw, &expiryRaw,
-		&doc.GracePeriodDays, &doc.FinePerDay, &doc.FineType, &doc.FineCap,
-		&doc.IsPrimary, &doc.IsMandatory, &metadataRaw,
+		&doc.IsPrimary, &metadataRaw,
 		&doc.FileURL, &doc.FileName, &doc.FileSize, &doc.FileType,
 		&doc.LastUpdated, &doc.CreatedAt,
 	)
@@ -88,8 +85,7 @@ func scanDocumentWithRule(scanner interface {
 	err := scanner.Scan(
 		&doc.ID, &doc.EmployeeID, &doc.DocumentType,
 		&docNumber, &issueDateRaw, &expiryRaw,
-		&doc.GracePeriodDays, &doc.FinePerDay, &doc.FineType, &doc.FineCap,
-		&doc.IsPrimary, &doc.IsMandatory, &metadataRaw,
+		&doc.IsPrimary, &metadataRaw,
 		&doc.FileURL, &doc.FileName, &doc.FileSize, &doc.FileType,
 		&doc.LastUpdated, &doc.CreatedAt,
 		&rule.GracePeriodDays, &rule.FinePerDay, &rule.FineType, &rule.FineCap,
@@ -178,6 +174,11 @@ func (h *DocumentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !checkEmployeeAccess(r.Context(), h.db.GetPool(), employeeID) {
+		JSONError(w, http.StatusForbidden, "Access denied to this employee")
+		return
+	}
+
 	var req models.CreateDocumentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		JSONError(w, http.StatusBadRequest, "Invalid JSON body")
@@ -210,30 +211,17 @@ func (h *DocumentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		metadata = json.RawMessage(`{}`)
 	}
 
-	// Determine is_mandatory from document_types table (fallback to hardcoded)
-	var isMandatory bool
-	mandErr := pool.QueryRow(ctx,
-		`SELECT COALESCE((SELECT is_mandatory FROM document_types WHERE doc_type = $1 AND is_active = TRUE), $2)`,
-		req.DocumentType, compliance.IsMandatoryType(req.DocumentType),
-	).Scan(&isMandatory)
-	if mandErr != nil {
-		isMandatory = compliance.IsMandatoryType(req.DocumentType)
-	}
-
 	var doc models.Document
 	err := pool.QueryRow(ctx, fmt.Sprintf(`
 		INSERT INTO documents (
 			employee_id, document_type, document_number, issue_date, expiry_date,
-			grace_period_days, fine_per_day, fine_type, fine_cap,
-			is_mandatory, metadata,
-			file_url, file_name, file_size, file_type
+			metadata, file_url, file_name, file_size, file_type
 		)
-		VALUES ($1,$2,$3,$4,$5, 0, 0, 'daily', 0, $6,$7,$8,$9,$10,$11)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		RETURNING %s
 	`, docRetCols),
 		employeeID, req.DocumentType,
 		req.DocumentNumber, req.IssueDate, req.ExpiryDate,
-		isMandatory,
 		string(metadata),
 		req.FileURL, req.FileName, req.FileSize, req.FileType,
 	)
@@ -242,6 +230,12 @@ func (h *DocumentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		JSONError(w, http.StatusInternalServerError, "Failed to create document")
 		return
 	}
+
+	// Populate IsMandatory from document_types
+	_ = pool.QueryRow(ctx,
+		`SELECT COALESCE((SELECT is_mandatory FROM document_types WHERE doc_type = $1 AND is_active = TRUE), FALSE)`,
+		doc.DocumentType,
+	).Scan(&doc.IsMandatory)
 
 	// Audit trail
 	userID, _ := r.Context().Value(ctxkeys.UserID).(string)
@@ -287,12 +281,16 @@ func (h *DocumentHandler) ListByEmployee(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if !checkEmployeeAccess(r.Context(), h.db.GetPool(), employeeID) {
+		JSONError(w, http.StatusForbidden, "Access denied to this employee")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	pool := h.db.GetPool()
 
-	// JOIN compliance_rules to get grace/fine values at query time
 	rows, err := pool.Query(ctx, fmt.Sprintf(`
 		SELECT %s,
 			COALESCE(cr.grace_period_days, gr.grace_period_days, 0),
@@ -306,7 +304,7 @@ func (h *DocumentHandler) ListByEmployee(w http.ResponseWriter, r *http.Request)
 		LEFT JOIN compliance_rules gr ON gr.doc_type = d.document_type AND gr.company_id IS NULL
 		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
 		WHERE d.employee_id = $1
-		ORDER BY COALESCE(dt.is_mandatory, d.is_mandatory) DESC, COALESCE(dt.sort_order, 100) ASC, d.created_at DESC
+		ORDER BY COALESCE(dt.is_mandatory, FALSE) DESC, COALESCE(dt.sort_order, 100) ASC, d.created_at DESC
 	`, docCols), employeeID)
 	if err != nil {
 		log.Printf("Error fetching documents: %v", err)
@@ -364,6 +362,11 @@ func (h *DocumentHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !checkDocumentAccess(r.Context(), h.db.GetPool(), id) {
+		JSONError(w, http.StatusForbidden, "Access denied to this document")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -375,12 +378,14 @@ func (h *DocumentHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 			COALESCE(cr.fine_per_day, gr.fine_per_day, 0),
 			COALESCE(cr.fine_type, gr.fine_type, 'daily'),
 			COALESCE(cr.fine_cap, gr.fine_cap, 0),
+			COALESCE(dt.is_mandatory, FALSE),
 			e.name AS employee_name, c.name AS company_name
 		FROM documents d
 		JOIN employees e ON d.employee_id = e.id
 		JOIN companies c ON e.company_id = c.id
 		LEFT JOIN compliance_rules cr ON cr.doc_type = d.document_type AND cr.company_id = e.company_id
 		LEFT JOIN compliance_rules gr ON gr.doc_type = d.document_type AND gr.company_id IS NULL
+		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
 		WHERE d.id = $1
 	`, docCols), id)
 
@@ -393,11 +398,11 @@ func (h *DocumentHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	err := row.Scan(
 		&doc.ID, &doc.EmployeeID, &doc.DocumentType,
 		&docNumber, &issueDateRaw, &expiryRaw,
-		&doc.GracePeriodDays, &doc.FinePerDay, &doc.FineType, &doc.FineCap,
-		&doc.IsPrimary, &doc.IsMandatory, &metadataRaw,
+		&doc.IsPrimary, &metadataRaw,
 		&doc.FileURL, &doc.FileName, &doc.FileSize, &doc.FileType,
 		&doc.LastUpdated, &doc.CreatedAt,
 		&rule.GracePeriodDays, &rule.FinePerDay, &rule.FineType, &rule.FineCap,
+		&doc.IsMandatory,
 		&employeeName, &companyName,
 	)
 	if err != nil {
@@ -440,6 +445,11 @@ func (h *DocumentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !checkDocumentAccess(r.Context(), h.db.GetPool(), id) {
+		JSONError(w, http.StatusForbidden, "Access denied to this document")
+		return
+	}
+
 	var req models.UpdateDocumentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		JSONError(w, http.StatusBadRequest, "Invalid JSON body")
@@ -474,26 +484,6 @@ func (h *DocumentHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.ExpiryDate != nil {
 		setClauses = append(setClauses, fmt.Sprintf("expiry_date = $%d", argIdx))
 		args = append(args, *req.ExpiryDate)
-		argIdx++
-	}
-	if req.GracePeriodDays != nil {
-		setClauses = append(setClauses, fmt.Sprintf("grace_period_days = $%d", argIdx))
-		args = append(args, *req.GracePeriodDays)
-		argIdx++
-	}
-	if req.FinePerDay != nil {
-		setClauses = append(setClauses, fmt.Sprintf("fine_per_day = $%d", argIdx))
-		args = append(args, *req.FinePerDay)
-		argIdx++
-	}
-	if req.FineType != nil {
-		setClauses = append(setClauses, fmt.Sprintf("fine_type = $%d", argIdx))
-		args = append(args, *req.FineType)
-		argIdx++
-	}
-	if req.FineCap != nil {
-		setClauses = append(setClauses, fmt.Sprintf("fine_cap = $%d", argIdx))
-		args = append(args, *req.FineCap)
 		argIdx++
 	}
 	if len(req.Metadata) > 0 {
@@ -551,6 +541,12 @@ func (h *DocumentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Populate IsMandatory from document_types
+	_ = pool.QueryRow(ctx,
+		`SELECT COALESCE((SELECT is_mandatory FROM document_types WHERE doc_type = $1 AND is_active = TRUE), FALSE)`,
+		doc.DocumentType,
+	).Scan(&doc.IsMandatory)
+
 	// Audit trail
 	userID, _ := r.Context().Value(ctxkeys.UserID).(string)
 	logActivity(pool, userID, "updated", "document", doc.ID, map[string]interface{}{
@@ -589,6 +585,11 @@ func (h *DocumentHandler) TogglePrimary(w http.ResponseWriter, r *http.Request) 
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		JSONError(w, http.StatusBadRequest, "Document ID is required")
+		return
+	}
+
+	if !checkDocumentAccess(r.Context(), h.db.GetPool(), id) {
+		JSONError(w, http.StatusForbidden, "Access denied to this document")
 		return
 	}
 
@@ -633,6 +634,11 @@ func (h *DocumentHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		JSONError(w, http.StatusBadRequest, "Document ID is required")
+		return
+	}
+
+	if !checkDocumentAccess(r.Context(), h.db.GetPool(), id) {
+		JSONError(w, http.StatusForbidden, "Access denied to this document")
 		return
 	}
 
@@ -714,6 +720,11 @@ func (h *DocumentHandler) Renew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !checkDocumentAccess(r.Context(), h.db.GetPool(), oldID) {
+		JSONError(w, http.StatusForbidden, "Access denied to this document")
+		return
+	}
+
 	var req struct {
 		DocumentNumber *string         `json:"documentNumber,omitempty"`
 		IssueDate      *string         `json:"issueDate,omitempty"`
@@ -788,16 +799,15 @@ func (h *DocumentHandler) Renew(w http.ResponseWriter, r *http.Request) {
 	newRow := tx.QueryRow(ctx, fmt.Sprintf(`
 		INSERT INTO documents (
 			employee_id, document_type, document_number, issue_date, expiry_date,
-			grace_period_days, fine_per_day, fine_type, fine_cap,
-			is_primary, is_mandatory, metadata,
+			is_primary, metadata,
 			file_url, file_name, file_size, file_type
 		)
-		VALUES ($1,$2,$3,$4,$5, 0, 0, 'daily', 0, $6,$7,$8,$9,$10,$11,$12)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		RETURNING %s
 	`, docRetCols),
 		oldDoc.EmployeeID, oldDoc.DocumentType,
 		docNumber, issueDate, req.ExpiryDate,
-		oldDoc.IsPrimary, oldDoc.IsMandatory, string(metadata),
+		oldDoc.IsPrimary, string(metadata),
 		fileURL, fileName, fileSize, fileType,
 	)
 
@@ -807,8 +817,8 @@ func (h *DocumentHandler) Renew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Archive the old document: exclude from compliance aggregation and primary display
-	_, err = tx.Exec(ctx, `UPDATE documents SET is_primary = FALSE, is_mandatory = FALSE WHERE id = $1`, oldID)
+	// Archive the old document
+	_, err = tx.Exec(ctx, `UPDATE documents SET is_primary = FALSE WHERE id = $1`, oldID)
 	if err != nil {
 		log.Printf("Error archiving old document: %v", err)
 	}
@@ -817,6 +827,12 @@ func (h *DocumentHandler) Renew(w http.ResponseWriter, r *http.Request) {
 		JSONError(w, http.StatusInternalServerError, "Failed to commit renewal")
 		return
 	}
+
+	// Populate IsMandatory from document_types
+	_ = pool.QueryRow(ctx,
+		`SELECT COALESCE((SELECT is_mandatory FROM document_types WHERE doc_type = $1 AND is_active = TRUE), FALSE)`,
+		newDoc.DocumentType,
+	).Scan(&newDoc.IsMandatory)
 
 	// Audit trail
 	userID, _ := r.Context().Value(ctxkeys.UserID).(string)

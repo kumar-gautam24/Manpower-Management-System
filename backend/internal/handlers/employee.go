@@ -104,6 +104,11 @@ func (h *EmployeeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		req.Status = "active"
 	}
 
+	if !checkCompanyAccess(r.Context(), req.CompanyID) {
+		JSONError(w, http.StatusForbidden, "Access denied to this company")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -149,65 +154,46 @@ func (h *EmployeeHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Auto-create mandatory document slots from DB (falls back to hardcoded if DB empty)
 	mandatoryRows, mandErr := tx.Query(ctx, `
-		SELECT dt.doc_type,
-		       COALESCE(cr.grace_period_days, gr.grace_period_days, 0),
-		       COALESCE(cr.fine_per_day, gr.fine_per_day, 0),
-		       COALESCE(cr.fine_type, gr.fine_type, 'daily'),
-		       COALESCE(cr.fine_cap, gr.fine_cap, 0)
+		SELECT dt.doc_type
 		FROM document_types dt
 		LEFT JOIN compliance_rules cr ON cr.doc_type = dt.doc_type AND cr.company_id = $1
-		LEFT JOIN compliance_rules gr ON gr.doc_type = dt.doc_type AND gr.company_id IS NULL
 		WHERE dt.is_active = TRUE
 		  AND COALESCE(cr.is_mandatory, dt.is_mandatory) = TRUE
 		ORDER BY dt.sort_order
 	`, req.CompanyID)
 
-	type mandatoryDoc struct {
-		DocType    string
-		GraceDays  int
-		FinePerDay float64
-		FineType   string
-		FineCap    float64
-	}
-	var mandatoryDocs []mandatoryDoc
+	var mandatoryDocTypes []string
 
 	if mandErr == nil {
 		defer mandatoryRows.Close()
 		for mandatoryRows.Next() {
-			var md mandatoryDoc
-			if err := mandatoryRows.Scan(&md.DocType, &md.GraceDays, &md.FinePerDay, &md.FineType, &md.FineCap); err != nil {
+			var docType string
+			if err := mandatoryRows.Scan(&docType); err != nil {
 				log.Printf("Error scanning mandatory doc type: %v", err)
 				continue
 			}
-			mandatoryDocs = append(mandatoryDocs, md)
+			mandatoryDocTypes = append(mandatoryDocTypes, docType)
 		}
 	}
 
 	// Fallback: if DB tables are empty or query failed, use hardcoded defaults
-	if len(mandatoryDocs) == 0 {
+	if len(mandatoryDocTypes) == 0 {
 		for _, md := range compliance.MandatoryDocs {
-			mandatoryDocs = append(mandatoryDocs, mandatoryDoc{
-				DocType: md.DocType, GraceDays: md.GracePeriodDays,
-				FinePerDay: md.FinePerDay, FineType: md.FineType, FineCap: md.FineCap,
-			})
+			mandatoryDocTypes = append(mandatoryDocTypes, md.DocType)
 		}
 	}
 
-	for _, md := range mandatoryDocs {
+	for _, docType := range mandatoryDocTypes {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO documents (
-				employee_id, document_type,
-				grace_period_days, fine_per_day, fine_type, fine_cap,
-				is_mandatory, is_primary,
+				employee_id, document_type, is_primary,
 				file_url, file_name, file_size, file_type
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, TRUE, FALSE, '', '', 0, '')
-		`, employee.ID, md.DocType,
-			md.GraceDays, md.FinePerDay, md.FineType, md.FineCap,
-		)
+			VALUES ($1, $2, FALSE, '', '', 0, '')
+		`, employee.ID, docType)
 		if err != nil {
 			log.Printf("Error creating mandatory doc slot %s for employee %s: %v",
-				md.DocType, employee.ID, err)
+				docType, employee.ID, err)
 		}
 	}
 
@@ -279,6 +265,9 @@ func (h *EmployeeHandler) List(w http.ResponseWriter, r *http.Request) {
 	args := []interface{}{}
 	argIdx := 1
 
+	// Company scope (role-based)
+	where, args, argIdx = appendCompanyScope(ctx, where, args, argIdx, "e.company_id")
+
 	if companyID != "" {
 		where += fmt.Sprintf(" AND e.company_id = $%d", argIdx)
 		args = append(args, companyID)
@@ -334,8 +323,8 @@ func (h *EmployeeHandler) List(w http.ResponseWriter, r *http.Request) {
 			SELECT
 				CASE
 					WHEN COUNT(*) = 0 THEN 'none'
-					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') < CURRENT_DATE) > 0 THEN 'penalty_active'
-					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') >= CURRENT_DATE) > 0 THEN 'in_grace'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, 0) * INTERVAL '1 day') < CURRENT_DATE) > 0 THEN 'penalty_active'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, 0) * INTERVAL '1 day') >= CURRENT_DATE) > 0 THEN 'in_grace'
 					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date >= CURRENT_DATE AND d2.expiry_date <= CURRENT_DATE + INTERVAL '30 days') > 0 THEN 'expiring_soon'
 					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NULL OR d2.document_number IS NULL OR d2.document_number = '') > 0 THEN 'incomplete'
 					ELSE 'valid'
@@ -344,7 +333,7 @@ func (h *EmployeeHandler) List(w http.ResponseWriter, r *http.Request) {
 			LEFT JOIN document_types dt2 ON dt2.doc_type = d2.document_type AND dt2.is_active = TRUE
 			LEFT JOIN compliance_rules cr2 ON cr2.doc_type = d2.document_type AND cr2.company_id = e.company_id
 			LEFT JOIN compliance_rules gr2 ON gr2.doc_type = d2.document_type AND gr2.company_id IS NULL
-			WHERE d2.employee_id = e.id AND COALESCE(dt2.is_mandatory, d2.is_mandatory) = TRUE
+			WHERE d2.employee_id = e.id AND COALESCE(dt2.is_mandatory, FALSE) = TRUE
 		) ds ON TRUE
 		%s %s
 	`, where, statusFilter)
@@ -374,8 +363,8 @@ func (h *EmployeeHandler) List(w http.ResponseWriter, r *http.Request) {
 			SELECT
 				CASE
 					WHEN COUNT(*) = 0 THEN 'none'
-					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') < CURRENT_DATE) > 0 THEN 'penalty_active'
-					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') >= CURRENT_DATE) > 0 THEN 'in_grace'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, 0) * INTERVAL '1 day') < CURRENT_DATE) > 0 THEN 'penalty_active'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, 0) * INTERVAL '1 day') >= CURRENT_DATE) > 0 THEN 'in_grace'
 					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date >= CURRENT_DATE AND d2.expiry_date <= CURRENT_DATE + INTERVAL '30 days') > 0 THEN 'expiring_soon'
 					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NULL OR d2.document_number IS NULL OR d2.document_number = '') > 0 THEN 'incomplete'
 					ELSE 'valid'
@@ -385,17 +374,17 @@ func (h *EmployeeHandler) List(w http.ResponseWriter, r *http.Request) {
 				COUNT(*)::int AS docs_total,
 				(SELECT dd.document_type FROM documents dd
 				 LEFT JOIN document_types ddt ON ddt.doc_type = dd.document_type AND ddt.is_active = TRUE
-				 WHERE dd.employee_id = e.id AND COALESCE(ddt.is_mandatory, dd.is_mandatory) = TRUE
+				 WHERE dd.employee_id = e.id AND COALESCE(ddt.is_mandatory, FALSE) = TRUE
 				   AND dd.expiry_date IS NOT NULL
 				 ORDER BY dd.expiry_date ASC LIMIT 1
 				) AS urgent_doc_type,
-				COUNT(*) FILTER (WHERE d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') < CURRENT_DATE)::int AS expired_count,
+				COUNT(*) FILTER (WHERE d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, 0) * INTERVAL '1 day') < CURRENT_DATE)::int AS expired_count,
 				COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date >= CURRENT_DATE AND d2.expiry_date <= CURRENT_DATE + INTERVAL '30 days')::int AS expiring_count
 			FROM documents d2
 			LEFT JOIN document_types dt2 ON dt2.doc_type = d2.document_type AND dt2.is_active = TRUE
 			LEFT JOIN compliance_rules cr2 ON cr2.doc_type = d2.document_type AND cr2.company_id = e.company_id
 			LEFT JOIN compliance_rules gr2 ON gr2.doc_type = d2.document_type AND gr2.company_id IS NULL
-			WHERE d2.employee_id = e.id AND COALESCE(dt2.is_mandatory, d2.is_mandatory) = TRUE
+			WHERE d2.employee_id = e.id AND COALESCE(dt2.is_mandatory, FALSE) = TRUE
 		) ds ON TRUE
 		%s %s
 		ORDER BY %s %s
@@ -468,8 +457,8 @@ func (h *EmployeeHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 			SELECT
 				CASE
 					WHEN COUNT(*) = 0 THEN 'none'
-					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') < CURRENT_DATE) > 0 THEN 'penalty_active'
-					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') >= CURRENT_DATE) > 0 THEN 'in_grace'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, 0) * INTERVAL '1 day') < CURRENT_DATE) > 0 THEN 'penalty_active'
+					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, 0) * INTERVAL '1 day') >= CURRENT_DATE) > 0 THEN 'in_grace'
 					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date >= CURRENT_DATE AND d2.expiry_date <= CURRENT_DATE + INTERVAL '30 days') > 0 THEN 'expiring_soon'
 					WHEN COUNT(*) FILTER (WHERE d2.expiry_date IS NULL OR d2.document_number IS NULL OR d2.document_number = '') > 0 THEN 'incomplete'
 					ELSE 'valid'
@@ -479,17 +468,17 @@ func (h *EmployeeHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 				COUNT(*)::int AS docs_total,
 				(SELECT dd.document_type FROM documents dd
 				 LEFT JOIN document_types ddt ON ddt.doc_type = dd.document_type AND ddt.is_active = TRUE
-				 WHERE dd.employee_id = e.id AND COALESCE(ddt.is_mandatory, dd.is_mandatory) = TRUE
+				 WHERE dd.employee_id = e.id AND COALESCE(ddt.is_mandatory, FALSE) = TRUE
 				   AND dd.expiry_date IS NOT NULL
 				 ORDER BY dd.expiry_date ASC LIMIT 1
 				) AS urgent_doc_type,
-				COUNT(*) FILTER (WHERE d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d2.grace_period_days) * INTERVAL '1 day') < CURRENT_DATE)::int AS expired_count,
+				COUNT(*) FILTER (WHERE d2.expiry_date < CURRENT_DATE AND (d2.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, 0) * INTERVAL '1 day') < CURRENT_DATE)::int AS expired_count,
 				COUNT(*) FILTER (WHERE d2.expiry_date IS NOT NULL AND d2.expiry_date >= CURRENT_DATE AND d2.expiry_date <= CURRENT_DATE + INTERVAL '30 days')::int AS expiring_count
 			FROM documents d2
 			LEFT JOIN document_types dt2 ON dt2.doc_type = d2.document_type AND dt2.is_active = TRUE
 			LEFT JOIN compliance_rules cr2 ON cr2.doc_type = d2.document_type AND cr2.company_id = e.company_id
 			LEFT JOIN compliance_rules gr2 ON gr2.doc_type = d2.document_type AND gr2.company_id IS NULL
-			WHERE d2.employee_id = e.id AND COALESCE(dt2.is_mandatory, d2.is_mandatory) = TRUE
+			WHERE d2.employee_id = e.id AND COALESCE(dt2.is_mandatory, FALSE) = TRUE
 		) ds ON TRUE
 		WHERE e.id = $1
 	`, employeeCols), id,
@@ -511,6 +500,11 @@ func (h *EmployeeHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !checkCompanyAccess(r.Context(), emp.CompanyID) {
+		JSONError(w, http.StatusForbidden, "Access denied to this employee")
+		return
+	}
+
 	JSON(w, http.StatusOK, map[string]interface{}{
 		"data": emp,
 	})
@@ -524,6 +518,11 @@ func (h *EmployeeHandler) Exit(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		JSONError(w, http.StatusBadRequest, "Employee ID is required")
+		return
+	}
+
+	if !checkEmployeeAccess(r.Context(), h.db.GetPool(), id) {
+		JSONError(w, http.StatusForbidden, "Access denied to this employee")
 		return
 	}
 
@@ -598,6 +597,11 @@ func (h *EmployeeHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		JSONError(w, http.StatusBadRequest, "Employee ID is required")
+		return
+	}
+
+	if !checkEmployeeAccess(r.Context(), h.db.GetPool(), id) {
+		JSONError(w, http.StatusForbidden, "Access denied to this employee")
 		return
 	}
 
@@ -710,6 +714,11 @@ func (h *EmployeeHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !checkEmployeeAccess(r.Context(), h.db.GetPool(), id) {
+		JSONError(w, http.StatusForbidden, "Access denied to this employee")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -758,7 +767,14 @@ func (h *EmployeeHandler) BatchDelete(w http.ResponseWriter, r *http.Request) {
 
 	pool := h.db.GetPool()
 
-	tag, err := pool.Exec(ctx, "DELETE FROM employees WHERE id = ANY($1::uuid[])", req.IDs)
+	scope := ctxkeys.GetCompanyScope(r.Context())
+	var tag interface{ RowsAffected() int64 }
+	var err error
+	if scope == nil {
+		tag, err = pool.Exec(ctx, "DELETE FROM employees WHERE id = ANY($1::uuid[])", req.IDs)
+	} else {
+		tag, err = pool.Exec(ctx, "DELETE FROM employees WHERE id = ANY($1::uuid[]) AND company_id = ANY($2)", req.IDs, scope)
+	}
 	if err != nil {
 		log.Printf("Error batch deleting employees: %v", err)
 		JSONError(w, http.StatusInternalServerError, "Failed to delete employees")
@@ -786,7 +802,13 @@ func (h *EmployeeHandler) Export(w http.ResponseWriter, r *http.Request) {
 
 	pool := h.db.GetPool()
 
-	rows, err := pool.Query(ctx, `
+	where := "WHERE 1=1"
+	exportArgs := []interface{}{}
+	exportArgIdx := 1
+	where, exportArgs, exportArgIdx = appendCompanyScope(ctx, where, exportArgs, exportArgIdx, "e.company_id")
+	_ = exportArgIdx
+
+	rows, err := pool.Query(ctx, fmt.Sprintf(`
 		SELECT e.name, e.trade, e.mobile, e.joining_date::text,
 			COALESCE(e.gender,''), COALESCE(e.nationality,''),
 			COALESCE(e.passport_number,''), COALESCE(e.native_location,''),
@@ -794,8 +816,9 @@ func (h *EmployeeHandler) Export(w http.ResponseWriter, r *http.Request) {
 			e.status, c.name
 		FROM employees e
 		JOIN companies c ON e.company_id = c.id
+		%s
 		ORDER BY e.name ASC
-	`)
+	`, where), exportArgs...)
 	if err != nil {
 		log.Printf("Error exporting employees: %v", err)
 		JSONError(w, http.StatusInternalServerError, "Failed to export")

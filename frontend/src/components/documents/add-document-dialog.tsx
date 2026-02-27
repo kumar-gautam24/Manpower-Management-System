@@ -10,12 +10,12 @@ import { Label } from '@/components/ui/label';
 import {
     Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { Loader2, Upload, FileText, Image, X } from 'lucide-react';
+import { Loader2, Upload, FileText, Image, X, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { docDisplayName } from '@/lib/constants';
 import { useDocumentTypes } from '@/hooks/use-document-types';
-import type { Document, DocumentWithCompliance, EmployeeWithCompany, AdminDocumentType, MetadataFieldDef } from '@/types';
+import type { Document, DocumentWithCompliance, EmployeeWithCompany, AdminDocumentType, MetadataFieldDef, DocumentDependency, DependencyAlert } from '@/types';
 
 // ── Shared helpers ──────────────────────────────────────────────
 
@@ -79,8 +79,17 @@ export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess, p
     const [file, setFile] = useState<File | null>(null);
     const [uploading, setUploading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const [depAlerts, setDepAlerts] = useState<DependencyAlert[]>([]);
+
+    useEffect(() => {
+        if (!open || !employeeId) return;
+        api.employees.getDependencyAlerts(employeeId)
+            .then(res => setDepAlerts(res.data || []))
+            .catch(() => setDepAlerts([]));
+    }, [open, employeeId]);
 
     const config = docTypes.find(t => t.docType === documentType);
+    const relevantAlerts = depAlerts.filter(a => a.blockedDoc === documentType);
 
     useEffect(() => {
         if (!documentType || !config) return;
@@ -204,6 +213,22 @@ export function AddDocumentDialog({ employeeId, open, onOpenChange, onSuccess, p
                             </div>
                         )}
                     </div>
+
+                    {/* Dependency warnings */}
+                    {documentType && relevantAlerts.length > 0 && (
+                        <div className="space-y-2">
+                            {relevantAlerts.map((alert, i) => (
+                                <div key={i} className={`flex items-start gap-2 p-3 rounded-lg text-sm ${
+                                    alert.severity === 'critical'
+                                        ? 'bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300'
+                                        : 'bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-amber-700 dark:text-amber-300'
+                                }`}>
+                                    <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                                    <span>{alert.message}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
 
                     {/* ── Fields shown after type is selected ── */}
                     {documentType && config && (

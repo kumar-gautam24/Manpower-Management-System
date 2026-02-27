@@ -76,7 +76,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
                         {/* Navigation Links */}
                         <nav className="flex items-center gap-1">
-                            {[...navItems, ...(user.role === 'admin' ? adminNavItems : [])].map((item) => {
+                            {[...navItems, ...(user.role === 'admin' || user.role === 'super_admin' ? adminNavItems : [])].map((item) => {
                                 const isActive =
                                     item.href === '/'
                                         ? pathname === '/'
@@ -136,6 +136,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                                     <div className="px-2 py-1.5">
                                         <p className="text-sm font-medium text-foreground">{user.name}</p>
                                         <p className="text-xs text-muted-foreground">{user.email}</p>
+                                        <span className="inline-block mt-1 px-1.5 py-0.5 text-[10px] font-semibold rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
+                                            {user.role.replace('_', ' ')}
+                                        </span>
                                     </div>
                                     <DropdownMenuSeparator />
                                     <DropdownMenuItem onClick={logout} className="text-red-600 dark:text-red-400 cursor-pointer">

@@ -450,3 +450,162 @@ func (h *AdminHandler) UpsertComplianceRules(w http.ResponseWriter, r *http.Requ
 		"message": "Compliance rules saved successfully",
 	})
 }
+
+// ── Document Dependencies ────────────────────────────────────
+
+type dependencyRow struct {
+	ID              string `json:"id"`
+	BlockingDocType string `json:"blockingDocType"`
+	BlockedDocType  string `json:"blockedDocType"`
+	Description     string `json:"description"`
+	CreatedAt       string `json:"createdAt"`
+}
+
+// ListDependencies returns all dependency rules.
+func (h *AdminHandler) ListDependencies(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	pool := h.db.GetPool()
+
+	rows, err := pool.Query(ctx, `
+		SELECT id, blocking_doc_type, blocked_doc_type, description, created_at::text
+		FROM document_dependencies
+		ORDER BY blocking_doc_type, blocked_doc_type
+	`)
+	if err != nil {
+		log.Printf("Error listing dependencies: %v", err)
+		JSONError(w, http.StatusInternalServerError, "Failed to fetch dependencies")
+		return
+	}
+	defer rows.Close()
+
+	deps := []dependencyRow{}
+	for rows.Next() {
+		var d dependencyRow
+		if err := rows.Scan(&d.ID, &d.BlockingDocType, &d.BlockedDocType, &d.Description, &d.CreatedAt); err != nil {
+			continue
+		}
+		deps = append(deps, d)
+	}
+
+	JSON(w, http.StatusOK, map[string]interface{}{"data": deps})
+}
+
+// CreateDependency adds a new dependency rule.
+func (h *AdminHandler) CreateDependency(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BlockingDocType string `json:"blockingDocType"`
+		BlockedDocType  string `json:"blockedDocType"`
+		Description     string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		JSONError(w, http.StatusBadRequest, "Invalid JSON body")
+		return
+	}
+	if req.BlockingDocType == "" || req.BlockedDocType == "" || req.Description == "" {
+		JSONError(w, http.StatusUnprocessableEntity, "All fields are required")
+		return
+	}
+	if req.BlockingDocType == req.BlockedDocType {
+		JSONError(w, http.StatusUnprocessableEntity, "A document type cannot block itself")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	pool := h.db.GetPool()
+
+	var dep dependencyRow
+	err := pool.QueryRow(ctx, `
+		INSERT INTO document_dependencies (blocking_doc_type, blocked_doc_type, description)
+		VALUES ($1, $2, $3)
+		RETURNING id, blocking_doc_type, blocked_doc_type, description, created_at::text
+	`, req.BlockingDocType, req.BlockedDocType, req.Description).Scan(
+		&dep.ID, &dep.BlockingDocType, &dep.BlockedDocType, &dep.Description, &dep.CreatedAt,
+	)
+	if err != nil {
+		log.Printf("Error creating dependency: %v", err)
+		JSONError(w, http.StatusInternalServerError, "Failed to create dependency")
+		return
+	}
+
+	userID, _ := r.Context().Value(ctxkeys.UserID).(string)
+	go logActivity(pool, userID, "created", "dependency", dep.ID, map[string]interface{}{
+		"blocking": req.BlockingDocType, "blocked": req.BlockedDocType,
+	})
+
+	JSON(w, http.StatusCreated, map[string]interface{}{
+		"data":    dep,
+		"message": "Dependency rule created",
+	})
+}
+
+// UpdateDependency modifies an existing dependency rule.
+func (h *AdminHandler) UpdateDependency(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	var req struct {
+		BlockingDocType string `json:"blockingDocType"`
+		BlockedDocType  string `json:"blockedDocType"`
+		Description     string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		JSONError(w, http.StatusBadRequest, "Invalid JSON body")
+		return
+	}
+	if req.BlockingDocType == "" || req.BlockedDocType == "" || req.Description == "" {
+		JSONError(w, http.StatusUnprocessableEntity, "All fields are required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	pool := h.db.GetPool()
+
+	var dep dependencyRow
+	err := pool.QueryRow(ctx, `
+		UPDATE document_dependencies
+		SET blocking_doc_type = $1, blocked_doc_type = $2, description = $3
+		WHERE id = $4
+		RETURNING id, blocking_doc_type, blocked_doc_type, description, created_at::text
+	`, req.BlockingDocType, req.BlockedDocType, req.Description, id).Scan(
+		&dep.ID, &dep.BlockingDocType, &dep.BlockedDocType, &dep.Description, &dep.CreatedAt,
+	)
+	if err != nil {
+		JSONError(w, http.StatusNotFound, "Dependency rule not found")
+		return
+	}
+
+	JSON(w, http.StatusOK, map[string]interface{}{
+		"data":    dep,
+		"message": "Dependency rule updated",
+	})
+}
+
+// DeleteDependency removes a dependency rule.
+func (h *AdminHandler) DeleteDependency(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	pool := h.db.GetPool()
+
+	tag, err := pool.Exec(ctx, "DELETE FROM document_dependencies WHERE id = $1", id)
+	if err != nil {
+		log.Printf("Error deleting dependency: %v", err)
+		JSONError(w, http.StatusInternalServerError, "Failed to delete dependency")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		JSONError(w, http.StatusNotFound, "Dependency rule not found")
+		return
+	}
+
+	JSON(w, http.StatusOK, map[string]interface{}{
+		"message": "Dependency rule deleted",
+	})
+}

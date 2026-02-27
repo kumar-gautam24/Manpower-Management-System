@@ -8,13 +8,18 @@ interface User {
     email: string;
     name: string;
     role: string;
+    companyIds?: string[];
 }
 
 interface AuthContextValue {
     user: User | null;
     token: string | null;
     loading: boolean;
+    isSuperAdmin: boolean;
     isAdmin: boolean;
+    isCompanyOwner: boolean;
+    isViewer: boolean;
+    canWrite: boolean;
     login: (email: string, password: string) => Promise<void>;
     register: (name: string, email: string, password: string) => Promise<void>;
     logout: () => void;
@@ -156,10 +161,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         router.push('/login');
     }, [router]);
 
-    const isAdmin = user?.role === 'admin';
+    const isSuperAdmin = user?.role === 'super_admin';
+    const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+    const isCompanyOwner = user?.role === 'company_owner';
+    const isViewer = user?.role === 'viewer';
+    const canWrite = isAdmin || isCompanyOwner;
 
     return (
-        <AuthContext.Provider value={{ user, token, loading, isAdmin, login, register, logout }}>
+        <AuthContext.Provider value={{ user, token, loading, isSuperAdmin, isAdmin, isCompanyOwner, isViewer, canWrite, login, register, logout }}>
             {children}
         </AuthContext.Provider>
     );

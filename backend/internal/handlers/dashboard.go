@@ -34,53 +34,62 @@ func (h *DashboardHandler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 	pool := h.db.GetPool()
 	metrics := models.DashboardMetrics{}
 
-	// Exclude exited employees for consistency with compliance stats
-	err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM employees WHERE exit_type IS NULL").Scan(&metrics.TotalEmployees)
+	scopeFilter, scopeArg := companyScopeClause(ctx, 1, "e.company_id")
+	var scopeArgs []interface{}
+	if scopeArg != nil {
+		scopeArgs = []interface{}{scopeArg}
+	}
+	empScopeFilter := scopeFilter
+	if empScopeFilter != "" {
+		empScopeFilter = " AND company_id = ANY($1)"
+	}
+
+	err := pool.QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*) FROM employees e WHERE exit_type IS NULL%s", empScopeFilter), scopeArgs...).Scan(&metrics.TotalEmployees)
 	if err != nil {
 		log.Printf("Error querying total employees: %v", err)
 		JSONError(w, http.StatusInternalServerError, "Failed to fetch metrics")
 		return
 	}
 
-	err = pool.QueryRow(ctx, `
+	err = pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT COUNT(*) FROM documents d
 		JOIN employees e ON d.employee_id = e.id
 		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
-		WHERE COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE AND d.expiry_date IS NOT NULL
+		WHERE COALESCE(dt.is_mandatory, FALSE) = TRUE AND d.expiry_date IS NOT NULL
 		  AND d.expiry_date > CURRENT_DATE + INTERVAL '30 days'
-		  AND e.exit_type IS NULL
-	`).Scan(&metrics.ActiveDocuments)
+		  AND e.exit_type IS NULL%s
+	`, scopeFilter), scopeArgs...).Scan(&metrics.ActiveDocuments)
 	if err != nil {
 		log.Printf("Error querying active documents: %v", err)
 		JSONError(w, http.StatusInternalServerError, "Failed to fetch metrics")
 		return
 	}
 
-	err = pool.QueryRow(ctx, `
+	err = pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT COUNT(*) FROM documents d
 		JOIN employees e ON d.employee_id = e.id
 		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
-		WHERE COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE AND d.expiry_date IS NOT NULL
+		WHERE COALESCE(dt.is_mandatory, FALSE) = TRUE AND d.expiry_date IS NOT NULL
 		  AND d.expiry_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
-		  AND e.exit_type IS NULL
-	`).Scan(&metrics.ExpiringSoon)
+		  AND e.exit_type IS NULL%s
+	`, scopeFilter), scopeArgs...).Scan(&metrics.ExpiringSoon)
 	if err != nil {
 		log.Printf("Error querying expiring soon: %v", err)
 		JSONError(w, http.StatusInternalServerError, "Failed to fetch metrics")
 		return
 	}
 
-	err = pool.QueryRow(ctx, `
+	err = pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT COUNT(*) FROM documents d
 		JOIN employees e ON d.employee_id = e.id
 		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
 		LEFT JOIN compliance_rules cr ON cr.doc_type = d.document_type AND cr.company_id = e.company_id
 		LEFT JOIN compliance_rules gr ON gr.doc_type = d.document_type AND gr.company_id IS NULL
-		WHERE COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE AND d.expiry_date IS NOT NULL
+		WHERE COALESCE(dt.is_mandatory, FALSE) = TRUE AND d.expiry_date IS NOT NULL
 		  AND d.expiry_date < CURRENT_DATE
-		  AND (d.expiry_date + COALESCE(cr.grace_period_days, gr.grace_period_days, d.grace_period_days) * INTERVAL '1 day') < CURRENT_DATE
-		  AND e.exit_type IS NULL
-	`).Scan(&metrics.Expired)
+		  AND (d.expiry_date + COALESCE(cr.grace_period_days, gr.grace_period_days, 0) * INTERVAL '1 day') < CURRENT_DATE
+		  AND e.exit_type IS NULL%s
+	`, scopeFilter), scopeArgs...).Scan(&metrics.Expired)
 	if err != nil {
 		log.Printf("Error querying expired: %v", err)
 		JSONError(w, http.StatusInternalServerError, "Failed to fetch metrics")
@@ -99,15 +108,21 @@ func (h *DashboardHandler) GetExpiryAlerts(w http.ResponseWriter, r *http.Reques
 
 	pool := h.db.GetPool()
 
-	rows, err := pool.Query(ctx, `
+	scopeFilter, scopeArg := companyScopeClause(ctx, 1, "e.company_id")
+	var scopeArgs []interface{}
+	if scopeArg != nil {
+		scopeArgs = []interface{}{scopeArg}
+	}
+
+	rows, err := pool.Query(ctx, fmt.Sprintf(`
 		SELECT
 			d.id, e.id, e.name, c.name, d.document_type,
 			d.expiry_date::text,
 			(d.expiry_date - CURRENT_DATE) AS days_left,
-			COALESCE(cr.grace_period_days, gr.grace_period_days, d.grace_period_days) AS grace_period_days,
-			COALESCE(cr.fine_per_day, gr.fine_per_day, d.fine_per_day) AS fine_per_day,
-			COALESCE(cr.fine_type, gr.fine_type, d.fine_type) AS fine_type,
-			COALESCE(cr.fine_cap, gr.fine_cap, d.fine_cap) AS fine_cap,
+			COALESCE(cr.grace_period_days, gr.grace_period_days, 0) AS grace_period_days,
+			COALESCE(cr.fine_per_day, gr.fine_per_day, 0) AS fine_per_day,
+			COALESCE(cr.fine_type, gr.fine_type, 'daily') AS fine_type,
+			COALESCE(cr.fine_cap, gr.fine_cap, 0) AS fine_cap,
 			d.document_number
 		FROM documents d
 		JOIN employees e ON d.employee_id = e.id
@@ -115,11 +130,11 @@ func (h *DashboardHandler) GetExpiryAlerts(w http.ResponseWriter, r *http.Reques
 		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
 		LEFT JOIN compliance_rules cr ON cr.doc_type = d.document_type AND cr.company_id = e.company_id
 		LEFT JOIN compliance_rules gr ON gr.doc_type = d.document_type AND gr.company_id IS NULL
-		WHERE COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE AND d.expiry_date IS NOT NULL
+		WHERE COALESCE(dt.is_mandatory, FALSE) = TRUE AND d.expiry_date IS NOT NULL
 		  AND d.expiry_date <= CURRENT_DATE + INTERVAL '30 days'
-		  AND e.exit_type IS NULL
+		  AND e.exit_type IS NULL%s
 		ORDER BY d.expiry_date ASC
-	`)
+	`, scopeFilter), scopeArgs...)
 	if err != nil {
 		log.Printf("Error fetching expiry alerts: %v", err)
 		JSONError(w, http.StatusInternalServerError, "Failed to fetch alerts")
@@ -178,13 +193,20 @@ func (h *DashboardHandler) GetCompanySummary(w http.ResponseWriter, r *http.Requ
 
 	pool := h.db.GetPool()
 
-	rows, err := pool.Query(ctx, `
+	scopeFilter, scopeArg := companyScopeClause(ctx, 1, "c.id")
+	var scopeArgs []interface{}
+	if scopeArg != nil {
+		scopeArgs = []interface{}{scopeArg}
+	}
+
+	rows, err := pool.Query(ctx, fmt.Sprintf(`
 		SELECT c.id, c.name, COALESCE(c.currency, 'AED'), COUNT(e.id) AS employee_count
 		FROM companies c
 		LEFT JOIN employees e ON e.company_id = c.id
+		WHERE 1=1%s
 		GROUP BY c.id, c.name, c.currency
 		ORDER BY employee_count DESC
-	`)
+	`, scopeFilter), scopeArgs...)
 	if err != nil {
 		log.Printf("Error fetching company summary: %v", err)
 		JSONError(w, http.StatusInternalServerError, "Failed to fetch company summary")
@@ -223,29 +245,39 @@ func (h *DashboardHandler) GetComplianceStats(w http.ResponseWriter, r *http.Req
 		DocumentsByStatus: make(map[string]int),
 	}
 
-	// Total employees (excluding exited)
-	pool.QueryRow(ctx, `SELECT COUNT(*) FROM employees WHERE exit_type IS NULL`).Scan(&stats.TotalEmployees)
+	scopeFilter, scopeArg := companyScopeClause(ctx, 1, "e.company_id")
+	var scopeArgs []interface{}
+	if scopeArg != nil {
+		scopeArgs = []interface{}{scopeArg}
+	}
+	empScopeFilter := ""
+	if scopeArg != nil {
+		empScopeFilter = " AND company_id = ANY($1)"
+	}
 
-	pool.QueryRow(ctx, `
+	pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM employees e WHERE exit_type IS NULL%s`, empScopeFilter), scopeArgs...).Scan(&stats.TotalEmployees)
+
+	pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT COUNT(*) FROM documents d
+		JOIN employees e ON d.employee_id = e.id
 		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
-		WHERE COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE
-	`).Scan(&stats.TotalDocuments)
+		WHERE COALESCE(dt.is_mandatory, FALSE) = TRUE%s
+	`, scopeFilter), scopeArgs...).Scan(&stats.TotalDocuments)
 
-	rows, err := pool.Query(ctx, `
+	rows, err := pool.Query(ctx, fmt.Sprintf(`
 		SELECT d.document_number, d.expiry_date::text,
-			COALESCE(cr.grace_period_days, gr.grace_period_days, d.grace_period_days) AS grace_period_days,
-			COALESCE(cr.fine_per_day, gr.fine_per_day, d.fine_per_day) AS fine_per_day,
-			COALESCE(cr.fine_type, gr.fine_type, d.fine_type) AS fine_type,
-			COALESCE(cr.fine_cap, gr.fine_cap, d.fine_cap) AS fine_cap,
+			COALESCE(cr.grace_period_days, gr.grace_period_days, 0) AS grace_period_days,
+			COALESCE(cr.fine_per_day, gr.fine_per_day, 0) AS fine_per_day,
+			COALESCE(cr.fine_type, gr.fine_type, 'daily') AS fine_type,
+			COALESCE(cr.fine_cap, gr.fine_cap, 0) AS fine_cap,
 			d.file_url
 		FROM documents d
 		JOIN employees e ON d.employee_id = e.id
 		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
 		LEFT JOIN compliance_rules cr ON cr.doc_type = d.document_type AND cr.company_id = e.company_id
 		LEFT JOIN compliance_rules gr ON gr.doc_type = d.document_type AND gr.company_id IS NULL
-		WHERE COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE AND e.exit_type IS NULL
-	`)
+		WHERE COALESCE(dt.is_mandatory, FALSE) = TRUE AND e.exit_type IS NULL%s
+	`, scopeFilter), scopeArgs...)
 	if err != nil {
 		log.Printf("Error fetching compliance stats: %v", err)
 		JSONError(w, http.StatusInternalServerError, "Failed to fetch compliance stats")
@@ -299,11 +331,17 @@ func (h *DashboardHandler) GetComplianceStats(w http.ResponseWriter, r *http.Req
 		stats.CompletionRate = float64(totalComplete) / float64(stats.TotalDocuments) * 100
 	}
 
-	companyRows, err := pool.Query(ctx, `
+	companyScopeF, companyScopeA := companyScopeClause(ctx, 1, "c.id")
+	var compScopeArgs []interface{}
+	if companyScopeA != nil {
+		compScopeArgs = []interface{}{companyScopeA}
+	}
+
+	companyRows, err := pool.Query(ctx, fmt.Sprintf(`
 		SELECT c.id, c.name, COUNT(DISTINCT e.id) AS emp_count,
 			COUNT(d.id) FILTER (WHERE d.expiry_date IS NOT NULL 
 				AND d.expiry_date < CURRENT_DATE
-				AND (d.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, d.grace_period_days) * INTERVAL '1 day') < CURRENT_DATE
+				AND (d.expiry_date + COALESCE(cr2.grace_period_days, gr2.grace_period_days, 0) * INTERVAL '1 day') < CURRENT_DATE
 			) AS penalty_count,
 			COUNT(d.id) FILTER (WHERE d.document_number IS NULL 
 				OR d.document_number = ''
@@ -315,10 +353,10 @@ func (h *DashboardHandler) GetComplianceStats(w http.ResponseWriter, r *http.Req
 		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
 		LEFT JOIN compliance_rules cr2 ON cr2.doc_type = d.document_type AND cr2.company_id = c.id
 		LEFT JOIN compliance_rules gr2 ON gr2.doc_type = d.document_type AND gr2.company_id IS NULL
-		WHERE COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE OR d.id IS NULL
+		WHERE (COALESCE(dt.is_mandatory, FALSE) = TRUE OR d.id IS NULL)%s
 		GROUP BY c.id, c.name
 		ORDER BY penalty_count DESC
-	`)
+	`, companyScopeF), compScopeArgs...)
 	if err == nil {
 		defer companyRows.Close()
 		for companyRows.Next() {
@@ -345,6 +383,11 @@ func (h *DashboardHandler) GetDependencyAlerts(w http.ResponseWriter, r *http.Re
 	employeeID := chi.URLParam(r, "id")
 	if employeeID == "" {
 		JSONError(w, http.StatusBadRequest, "Employee ID is required")
+		return
+	}
+
+	if !checkEmployeeAccess(r.Context(), h.db.GetPool(), employeeID) {
+		JSONError(w, http.StatusForbidden, "Access denied to this employee")
 		return
 	}
 
@@ -380,7 +423,7 @@ func (h *DashboardHandler) GetDependencyAlerts(w http.ResponseWriter, r *http.Re
 		SELECT d.document_type, COALESCE(d.expiry_date::text, ''), d.document_number
 		FROM documents d
 		LEFT JOIN document_types dt ON dt.doc_type = d.document_type AND dt.is_active = TRUE
-		WHERE d.employee_id = $1 AND COALESCE(dt.is_mandatory, d.is_mandatory) = TRUE
+		WHERE d.employee_id = $1 AND COALESCE(dt.is_mandatory, FALSE) = TRUE
 	`, employeeID)
 	if err != nil {
 		log.Printf("Error fetching employee docs for dependency check: %v", err)

@@ -25,11 +25,12 @@ type UpdateRoleRequest struct {
 	Role string `json:"role"`
 }
 
-// Validate checks that the role is one of the two allowed values.
+// Validate checks that the role is one of the allowed values.
 func (r *UpdateRoleRequest) Validate() map[string]string {
 	errors := map[string]string{}
-	if r.Role != "admin" && r.Role != "viewer" {
-		errors["role"] = "Role must be 'admin' or 'viewer'"
+	valid := map[string]bool{"viewer": true, "company_owner": true, "admin": true, "super_admin": true}
+	if !valid[r.Role] {
+		errors["role"] = "Role must be 'viewer', 'company_owner', 'admin', or 'super_admin'"
 	}
 	return errors
 }

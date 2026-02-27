@@ -4,10 +4,12 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"manpower-backend/internal/ctxkeys"
 )
@@ -19,7 +21,6 @@ func Auth(jwtSecret string) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Extract token from "Authorization: Bearer <token>" header
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
 				writeError(w, http.StatusUnauthorized, "Authorization header required")
@@ -32,10 +33,7 @@ func Auth(jwtSecret string) func(http.Handler) http.Handler {
 				return
 			}
 
-			tokenString := parts[1]
-
-			// Parse and validate the JWT
-			token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			token, err := jwt.Parse(parts[1], func(token *jwt.Token) (interface{}, error) {
 				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 					return nil, jwt.ErrSignatureInvalid
 				}
@@ -47,7 +45,6 @@ func Auth(jwtSecret string) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Extract claims and inject into request context
 			claims, ok := token.Claims.(jwt.MapClaims)
 			if !ok {
 				writeError(w, http.StatusUnauthorized, "Invalid token claims")
@@ -70,23 +67,15 @@ func Auth(jwtSecret string) func(http.Handler) http.Handler {
 	}
 }
 
-// roleLevel maps role names to permission levels for hierarchical access checks.
-// Higher numbers mean more permissions.
-var roleLevel = map[string]int{
-	"viewer": 1,
-	"admin":  2,
-}
-
 // RequireMinRole returns middleware that restricts access to users with at least
-// the specified role level. Role hierarchy: admin > viewer.
-// Must be used after Auth middleware (depends on role being in context).
+// the specified role level. Role hierarchy: super_admin > admin > company_owner > viewer.
 func RequireMinRole(minRole string) func(http.Handler) http.Handler {
-	minLevel := roleLevel[minRole]
+	minLevel := ctxkeys.RoleLevel[minRole]
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			userRole, _ := r.Context().Value(ctxkeys.UserRole).(string)
-			level := roleLevel[userRole]
+			level := ctxkeys.RoleLevel[userRole]
 
 			if level < minLevel {
 				writeError(w, http.StatusForbidden, "Insufficient permissions")
@@ -98,8 +87,48 @@ func RequireMinRole(minRole string) func(http.Handler) http.Handler {
 	}
 }
 
-// writeError writes a JSON error response without importing the handlers package,
-// which would create an import cycle.
+// InjectCompanyScope queries user_companies and injects the accessible company IDs
+// into the request context. For admin/super_admin the scope is nil (all companies).
+// Must be used after Auth middleware.
+func InjectCompanyScope(pool *pgxpool.Pool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			userRole, _ := r.Context().Value(ctxkeys.UserRole).(string)
+
+			if userRole == "admin" || userRole == "super_admin" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			userID, _ := r.Context().Value(ctxkeys.UserID).(string)
+
+			rows, err := pool.Query(r.Context(),
+				`SELECT company_id::text FROM user_companies WHERE user_id = $1`, userID)
+			if err != nil {
+				log.Printf("[scope] failed to query user_companies for %s: %v", userID, err)
+				writeError(w, http.StatusInternalServerError, "Failed to resolve company access")
+				return
+			}
+			defer rows.Close()
+
+			var ids []string
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					continue
+				}
+				ids = append(ids, id)
+			}
+			if ids == nil {
+				ids = []string{}
+			}
+
+			ctx := context.WithValue(r.Context(), ctxkeys.CompanyScope, ids)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
 func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

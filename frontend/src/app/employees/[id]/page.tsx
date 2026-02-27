@@ -67,7 +67,7 @@ export default function EmployeeDetailPage() {
     const [dependencyAlerts, setDependencyAlerts] = useState<DependencyAlert[]>([]);
     const [loading, setLoading] = useState(true);
     const [deleting, setDeleting] = useState(false);
-    const { isAdmin } = useUser();
+    const { canWrite } = useUser();
     const [showAddDoc, setShowAddDoc] = useState(false);
     const [editingDoc, setEditingDoc] = useState<DocumentWithCompliance | null>(null);
     const [renewingDoc, setRenewingDoc] = useState<DocumentWithCompliance | null>(null);
@@ -191,10 +191,16 @@ export default function EmployeeDetailPage() {
                 <CardContent className="pt-6">
                     <div className="flex flex-col sm:flex-row gap-6">
                         {/* Avatar */}
-                        <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-blue-100 to-indigo-100 dark:from-blue-950 dark:to-indigo-950 flex items-center justify-center flex-shrink-0">
-                            <span className="text-blue-700 dark:text-blue-300 font-bold text-2xl">
-                                {employee.name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2)}
-                            </span>
+                        <div className="w-20 h-20 rounded-2xl overflow-hidden flex-shrink-0">
+                            {employee.photoUrl ? (
+                                <img src={employee.photoUrl} alt={employee.name} className="w-full h-full object-cover" />
+                            ) : (
+                                <div className="w-full h-full bg-gradient-to-br from-blue-100 to-indigo-100 dark:from-blue-950 dark:to-indigo-950 flex items-center justify-center">
+                                    <span className="text-blue-700 dark:text-blue-300 font-bold text-2xl">
+                                        {employee.name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2)}
+                                    </span>
+                                </div>
+                            )}
                         </div>
 
                         {/* Details */}
@@ -210,7 +216,7 @@ export default function EmployeeDetailPage() {
                                     </div>
                                 </div>
 
-                                {isAdmin && (
+                                {canWrite && (
                                     <div className="flex gap-2 flex-shrink-0">
                                         <Link href={`/employees/${id}/edit`}>
                                             <Button variant="outline" size="sm"><Pencil className="h-4 w-4 mr-1" /> Edit</Button>
@@ -339,7 +345,7 @@ export default function EmployeeDetailPage() {
                             <CardTitle className="flex items-center gap-2 text-base"><FileText className="h-4 w-4" /> Documents</CardTitle>
                             <CardDescription>{documents.length} document{documents.length !== 1 ? 's' : ''}</CardDescription>
                         </div>
-                        {isAdmin && (
+                        {canWrite && (
                             <Button size="sm" onClick={() => setShowAddDoc(true)}>
                                 <Plus className="h-4 w-4 mr-1" /> Add Document
                             </Button>
@@ -347,7 +353,7 @@ export default function EmployeeDetailPage() {
                     </div>
 
                     {/* Document selection toolbar */}
-                    {isAdmin && selectedDocs.size > 0 && (
+                    {canWrite && selectedDocs.size > 0 && (
                         <div className="mt-3 flex items-center gap-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 rounded-lg px-3 py-2">
                             <Checkbox
                                 checked={selectedDocs.size === documents.length}
@@ -447,7 +453,7 @@ export default function EmployeeDetailPage() {
                                     >
                                         {/* Left: checkbox + doc info */}
                                         <div className="flex items-center gap-3 flex-1 min-w-0">
-                                            {isAdmin && (
+                                            {canWrite && (
                                                 <Checkbox
                                                     checked={selectedDocs.has(doc.id)}
                                                     onCheckedChange={() => toggleDocSelect(doc.id)}
@@ -520,7 +526,7 @@ export default function EmployeeDetailPage() {
                                             </Badge>
 
                                             {/* Admin actions */}
-                                            {isAdmin && (
+                                            {canWrite && (
                                                 <div className="flex items-center gap-1">
                                                     {/* Inline Renew button for docs needing attention */}
                                                     {needsRenew && (
@@ -629,6 +635,7 @@ export default function EmployeeDetailPage() {
             {renewingDoc && (
                 <RenewDocumentDialog
                     document={renewingDoc}
+                    employeeId={id}
                     open={!!renewingDoc}
                     onOpenChange={(open) => !open && setRenewingDoc(null)}
                     onSuccess={fetchEmployee}

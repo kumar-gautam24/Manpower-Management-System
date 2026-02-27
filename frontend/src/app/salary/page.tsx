@@ -31,7 +31,7 @@ export default function SalaryPage() {
     const [loading, setLoading] = useState(true);
 
     const [generating, setGenerating] = useState(false);
-    const { isAdmin } = useUser();
+    const { canWrite } = useUser();
 
     const fetchData = useCallback(async () => {
         setLoading(true);
@@ -144,7 +144,7 @@ export default function SalaryPage() {
                     <Button variant="outline" size="sm" onClick={handleExport}>
                         <Download className="h-4 w-4 mr-1" /> Export CSV
                     </Button>
-                    {isAdmin && (
+                    {canWrite && (
                         <Button onClick={handleGenerate} disabled={generating} size="sm">
                             <RefreshCw className={`h-4 w-4 mr-1 ${generating ? 'animate-spin' : ''}`} />
                             Generate
@@ -190,7 +190,7 @@ export default function SalaryPage() {
                         {companies.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
                     </SelectContent>
                 </Select>
-                {isAdmin && selected.size > 0 && (
+                {canWrite && selected.size > 0 && (
                     <Button onClick={handleBulkPaid} size="sm" variant="outline" className="text-green-600 border-green-300 dark:border-green-700">
                         <CheckCircle className="h-4 w-4 mr-1" /> Mark {selected.size} as Paid
                     </Button>
@@ -215,7 +215,7 @@ export default function SalaryPage() {
                             <thead>
                                 <tr className="border-b border-border bg-muted/30">
 
-                                    {isAdmin && (
+                                    {canWrite && (
                                         <th className="px-4 py-3 text-left">
                                             <Checkbox
                                                 checked={selected.size === records.length && records.length > 0}
@@ -228,13 +228,13 @@ export default function SalaryPage() {
                                     <th className="px-4 py-3 text-right font-medium text-muted-foreground">Amount</th>
                                     <th className="px-4 py-3 text-center font-medium text-muted-foreground">Status</th>
                                     <th className="px-4 py-3 text-center font-medium text-muted-foreground">Paid Date</th>
-                                    {isAdmin && <th className="px-4 py-3 text-center font-medium text-muted-foreground">Action</th>}
+                                    {canWrite && <th className="px-4 py-3 text-center font-medium text-muted-foreground">Action</th>}
                                 </tr>
                             </thead>
                             <tbody>
                                 {records.map(rec => (
                                     <tr key={rec.id} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
-                                        {isAdmin && (
+                                        {canWrite && (
                                             <td className="px-4 py-3">
                                                 <Checkbox
                                                     checked={selected.has(rec.id)}
@@ -250,7 +250,7 @@ export default function SalaryPage() {
                                         </td>
                                         <td className="px-4 py-3 text-center">{statusBadge(rec.status)}</td>
                                         <td className="px-4 py-3 text-center text-muted-foreground text-xs">{rec.paidDate || '—'}</td>
-                                        {isAdmin && (
+                                        {canWrite && (
                                             <td className="px-4 py-3 text-center">
                                                 <Button variant="ghost" size="sm"
                                                     onClick={() => handleToggleStatus(rec.id, rec.status)}

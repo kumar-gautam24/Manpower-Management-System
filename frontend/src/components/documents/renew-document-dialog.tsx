@@ -1,29 +1,39 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import {
     Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Loader2, Upload, FileText, Image, X } from 'lucide-react';
+import { Loader2, Upload, FileText, Image, X, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { docDisplayName } from '@/lib/constants';
 import { useDocumentTypes } from '@/hooks/use-document-types';
-import type { Document, DocumentWithCompliance } from '@/types';
+import type { Document, DocumentWithCompliance, DependencyAlert } from '@/types';
 
 interface RenewDocumentDialogProps {
-    document: Document | DocumentWithCompliance; // The document being renewed
+    document: Document | DocumentWithCompliance;
+    employeeId?: string;
     open: boolean;
     onOpenChange: (open: boolean) => void;
     onSuccess: () => void;
 }
 
-export function RenewDocumentDialog({ document, open, onOpenChange, onSuccess }: RenewDocumentDialogProps) {
+export function RenewDocumentDialog({ document, employeeId, open, onOpenChange, onSuccess }: RenewDocumentDialogProps) {
     const { types: docTypes } = useDocumentTypes();
     const [documentNumber, setDocumentNumber] = useState(document.documentNumber || '');
+    const [depAlerts, setDepAlerts] = useState<DependencyAlert[]>([]);
+
+    useEffect(() => {
+        const empId = employeeId || document.employeeId;
+        if (!open || !empId) return;
+        api.employees.getDependencyAlerts(empId)
+            .then(res => setDepAlerts((res.data || []).filter(a => a.blockedDoc === document.documentType)))
+            .catch(() => setDepAlerts([]));
+    }, [open, employeeId, document.employeeId, document.documentType]);
     const [issueDate, setIssueDate] = useState('');
     const [expiryDate, setExpiryDate] = useState('');
     const [file, setFile] = useState<File | null>(null);
@@ -118,6 +128,22 @@ export function RenewDocumentDialog({ document, open, onOpenChange, onSuccess }:
                 </DialogHeader>
 
                 <div className="space-y-4 py-2">
+                    {/* Dependency warnings */}
+                    {depAlerts.length > 0 && (
+                        <div className="space-y-2">
+                            {depAlerts.map((alert, i) => (
+                                <div key={i} className={`flex items-start gap-2 p-3 rounded-lg text-sm ${
+                                    alert.severity === 'critical'
+                                        ? 'bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300'
+                                        : 'bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-amber-700 dark:text-amber-300'
+                                }`}>
+                                    <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                                    <span>{alert.message}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
                     {/* Document Number */}
                     <div className="space-y-2">
                         <Label>New {config?.numberLabel || 'Document Number'} <span className="text-muted-foreground font-normal">(optional — keeps old)</span></Label>

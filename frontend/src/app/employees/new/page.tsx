@@ -19,6 +19,7 @@ import { api } from '@/lib/api';
 import type { Company, CreateEmployeeRequest } from '@/types';
 import { toast } from 'sonner';
 import { TradeSelect } from '@/components/trade-select';
+import { PhotoUpload } from '@/components/ui/photo-upload';
 
 export default function AddEmployeePage() {
     const router = useRouter();
@@ -102,6 +103,15 @@ export default function AddEmployeePage() {
                 </CardHeader>
                 <CardContent>
                     <form onSubmit={handleSubmit} className="space-y-5">
+                        {/* Photo */}
+                        <div className="flex justify-center">
+                            <PhotoUpload
+                                value={form.photoUrl || null}
+                                onChange={(url) => setForm(f => ({ ...f, photoUrl: url || '' }))}
+                                name={form.name || 'New Employee'}
+                            />
+                        </div>
+
                         {/* Name */}
                         <div className="space-y-2">
                             <Label htmlFor="name">Full Name *</Label>

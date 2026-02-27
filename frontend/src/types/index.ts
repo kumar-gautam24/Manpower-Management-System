@@ -64,10 +64,6 @@ export interface Document {
     documentNumber?: string | null;
     issueDate?: string | null;
     expiryDate?: string | null;
-    gracePeriodDays: number;
-    finePerDay: number;
-    fineType: string;       // "daily" | "monthly" | "one_time"
-    fineCap: number;
     isPrimary: boolean;
     isMandatory: boolean;
     metadata: Record<string, unknown>;
@@ -339,4 +335,12 @@ export interface EmployeeFilters {
     sort_order?: string;
     page?: number;
     limit?: number;
+}
+
+export interface DocumentDependency {
+    id: string;
+    blockingDocType: string;
+    blockedDocType: string;
+    description: string;
+    createdAt: string;
 }

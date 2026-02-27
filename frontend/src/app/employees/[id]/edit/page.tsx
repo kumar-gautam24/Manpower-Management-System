@@ -19,6 +19,7 @@ import { api } from '@/lib/api';
 import type { Company, EmployeeWithCompany } from '@/types';
 import { toast } from 'sonner';
 import { TradeSelect, COMMON_TRADES } from '@/components/trade-select';
+import { PhotoUpload } from '@/components/ui/photo-upload';
 
 export default function EditEmployeePage() {
     const params = useParams();
@@ -35,6 +36,7 @@ export default function EditEmployeePage() {
         trade: '',
         mobile: '',
         joiningDate: '',
+        photoUrl: '' as string | undefined,
         gender: '',
         dateOfBirth: '',
         nationality: '',
@@ -62,6 +64,7 @@ export default function EditEmployeePage() {
                 trade: emp.trade,
                 mobile: emp.mobile,
                 joiningDate: emp.joiningDate,
+                photoUrl: emp.photoUrl || '',
                 gender: emp.gender || '',
                 dateOfBirth: emp.dateOfBirth || '',
                 nationality: emp.nationality || '',
@@ -141,6 +144,15 @@ export default function EditEmployeePage() {
                 </CardHeader>
                 <CardContent>
                     <form onSubmit={handleSubmit} className="space-y-5">
+                        {/* Photo */}
+                        <div className="flex justify-center">
+                            <PhotoUpload
+                                value={form.photoUrl || null}
+                                onChange={(url) => setForm(f => ({ ...f, photoUrl: url || '' }))}
+                                name={form.name || 'Employee'}
+                            />
+                        </div>
+
                         {/* Name */}
                         <div className="space-y-2">
                             <Label htmlFor="name">Full Name *</Label>

@@ -48,13 +48,19 @@ func (h *SalaryHandler) Generate(w http.ResponseWriter, r *http.Request) {
 
 	// Insert salary records for all active employees that have a salary set.
 	// ON CONFLICT DO NOTHING — skip if record already exists for that month.
-	tag, err := pool.Exec(ctx, `
+	genScopeFilter, genScopeArg := companyScopeClause(ctx, 3, "company_id")
+	genArgs := []interface{}{req.Month, req.Year}
+	if genScopeArg != nil {
+		genArgs = append(genArgs, genScopeArg)
+	}
+
+	tag, err := pool.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO salary_records (employee_id, month, year, amount, status)
 		SELECT id, $1, $2, salary, 'pending'
 		FROM employees
-		WHERE status = 'active' AND salary IS NOT NULL AND salary > 0
+		WHERE status = 'active' AND salary IS NOT NULL AND salary > 0%s
 		ON CONFLICT (employee_id, month, year) DO NOTHING
-	`, req.Month, req.Year)
+	`, genScopeFilter), genArgs...)
 	if err != nil {
 		log.Printf("Error generating salary records: %v", err)
 		JSONError(w, http.StatusInternalServerError, "Failed to generate salary records")
@@ -98,6 +104,8 @@ func (h *SalaryHandler) List(w http.ResponseWriter, r *http.Request) {
 	where := "WHERE s.month = $1 AND s.year = $2"
 	args := []interface{}{month, year}
 	argIdx := 3
+
+	where, args, argIdx = appendCompanyScope(ctx, where, args, argIdx, "e.company_id")
 
 	if statusFilter != "" && statusFilter != "all" {
 		where += fmt.Sprintf(" AND s.status = $%d", argIdx)
@@ -153,6 +161,11 @@ func (h *SalaryHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		JSONError(w, http.StatusBadRequest, "Salary record ID is required")
+		return
+	}
+
+	if !checkSalaryAccess(r.Context(), h.db.GetPool(), id) {
+		JSONError(w, http.StatusForbidden, "Access denied to this salary record")
 		return
 	}
 
@@ -245,11 +258,18 @@ func (h *SalaryHandler) BulkUpdateStatus(w http.ResponseWriter, r *http.Request)
 		paidDateExpr = "CURRENT_DATE"
 	}
 
+	scope := ctxkeys.GetCompanyScope(r.Context())
+	scopeJoin := ""
+	if scope != nil {
+		scopeJoin = fmt.Sprintf(` AND employee_id IN (SELECT id FROM employees WHERE company_id = ANY($%d))`, len(args)+1)
+		args = append(args, scope)
+	}
+
 	query := fmt.Sprintf(`
 		UPDATE salary_records 
 		SET status = $1, paid_date = %s, updated_at = NOW()
-		WHERE id IN (%s)
-	`, paidDateExpr, strings.Join(placeholders, ", "))
+		WHERE id IN (%s)%s
+	`, paidDateExpr, strings.Join(placeholders, ", "), scopeJoin)
 
 	tag, err := pool.Exec(ctx, query, args...)
 	if err != nil {
@@ -293,8 +313,14 @@ func (h *SalaryHandler) Summary(w http.ResponseWriter, r *http.Request) {
 	// Calculate summary
 	// Note: Summing amounts of different currencies is conceptually wrong,
 	// but for this MVP we just sum raw values. Ideally frontend should warn if "Mixed".
+	sumScopeFilter, sumScopeArg := companyScopeClause(ctx, 3, "e.company_id")
+	sumArgs := []interface{}{month, year}
+	if sumScopeArg != nil {
+		sumArgs = append(sumArgs, sumScopeArg)
+	}
+
 	var summary models.SalarySummary
-	err := pool.QueryRow(ctx, `
+	err := pool.QueryRow(ctx, fmt.Sprintf(`
 		WITH stats AS (
 			SELECT
 				COALESCE(SUM(s.amount), 0) as total_amount,
@@ -308,12 +334,12 @@ func (h *SalaryHandler) Summary(w http.ResponseWriter, r *http.Request) {
 			FROM salary_records s
 			JOIN employees e ON s.employee_id = e.id
 			JOIN companies c ON e.company_id = c.id
-			WHERE s.month = $1 AND s.year = $2
+			WHERE s.month = $1 AND s.year = $2%s
 		)
 		SELECT total_amount, paid_amount, pending_count, paid_count, partial_count, total_count,
 			CASE WHEN currency_count > 1 THEN 'Mixed' ELSE COALESCE(single_currency, 'AED') END as currency
 		FROM stats
-	`, month, year).Scan(
+	`, sumScopeFilter), sumArgs...).Scan(
 		&summary.TotalAmount, &summary.PaidAmount,
 		&summary.PendingCount, &summary.PaidCount, &summary.PartialCount, &summary.TotalCount,
 		&summary.Currency,
@@ -349,15 +375,21 @@ func (h *SalaryHandler) Export(w http.ResponseWriter, r *http.Request) {
 
 	pool := h.db.GetPool()
 
-	rows, err := pool.Query(ctx, `
+	expScopeFilter, expScopeArg := companyScopeClause(ctx, 3, "e.company_id")
+	expArgs := []interface{}{month, year}
+	if expScopeArg != nil {
+		expArgs = append(expArgs, expScopeArg)
+	}
+
+	rows, err := pool.Query(ctx, fmt.Sprintf(`
 		SELECT e.name, c.name, COALESCE(c.currency, 'AED'), s.amount, s.status,
 			COALESCE(s.paid_date::text, ''), COALESCE(s.notes, '')
 		FROM salary_records s
 		JOIN employees e ON s.employee_id = e.id
 		JOIN companies c ON e.company_id = c.id
-		WHERE s.month = $1 AND s.year = $2
+		WHERE s.month = $1 AND s.year = $2%s
 		ORDER BY e.name ASC
-	`, month, year)
+	`, expScopeFilter), expArgs...)
 	if err != nil {
 		log.Printf("Error exporting salary: %v", err)
 		JSONError(w, http.StatusInternalServerError, "Failed to export")
@@ -388,6 +420,11 @@ func (h *SalaryHandler) ListByEmployee(w http.ResponseWriter, r *http.Request) {
 	employeeID := chi.URLParam(r, "id")
 	if employeeID == "" {
 		JSONError(w, http.StatusBadRequest, "Employee ID is required")
+		return
+	}
+
+	if !checkEmployeeAccess(r.Context(), h.db.GetPool(), employeeID) {
+		JSONError(w, http.StatusForbidden, "Access denied to this employee")
 		return
 	}
 

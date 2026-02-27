@@ -338,6 +338,13 @@ export const api = {
             }),
         delete: (id: string) =>
             fetcher<{ message: string }>(`/api/users/${id}`, { method: 'DELETE' }),
+        getCompanies: (id: string) =>
+            fetcher<{ data: { companyId: string; companyName: string }[] }>(`/api/users/${id}/companies`),
+        setCompanies: (id: string, companyIds: string[]) =>
+            fetcher<{ message: string }>(`/api/users/${id}/companies`, {
+                method: 'PUT',
+                body: JSON.stringify({ companyIds }),
+            }),
     },
 
     // ── Document Types ───────────────────────────────────────
@@ -382,6 +389,24 @@ export const api = {
                 method: 'PUT',
                 body: JSON.stringify(data),
             }),
+    },
+
+    // ── Document Dependencies (admin-only) ───────────────────
+    dependencies: {
+        list: () =>
+            fetcher<{ data: import('@/types').DocumentDependency[] }>('/api/admin/dependencies'),
+        create: (data: { blockingDocType: string; blockedDocType: string; description: string }) =>
+            fetcher<{ data: import('@/types').DocumentDependency; message: string }>('/api/admin/dependencies', {
+                method: 'POST',
+                body: JSON.stringify(data),
+            }),
+        update: (id: string, data: { blockingDocType: string; blockedDocType: string; description: string }) =>
+            fetcher<{ data: import('@/types').DocumentDependency; message: string }>(`/api/admin/dependencies/${id}`, {
+                method: 'PUT',
+                body: JSON.stringify(data),
+            }),
+        delete: (id: string) =>
+            fetcher<{ message: string }>(`/api/admin/dependencies/${id}`, { method: 'DELETE' }),
     },
 };
 

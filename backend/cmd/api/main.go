@@ -114,36 +114,35 @@ func main() {
 	// Serve uploaded files (local storage serves from disk; R2 redirects to CDN)
 	r.Get("/api/files/*", uploadHandler.ServeFile)
 
-	// 7. Protected routes (require valid JWT)
+	// 7. Protected routes (require valid JWT + inject company scope)
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(cfg.JWTSecret))
+		r.Use(middleware.InjectCompanyScope(db.GetPool()))
 
-		// Current user profile
+		// ── Read endpoints (all roles, company-scoped via handlers) ────
 		r.Get("/api/auth/me", authHandler.GetMe)
-
-		// File upload
 		r.Post("/api/upload", uploadHandler.Upload)
 
-		// Dashboard (read-only — accessible to all authenticated users)
+		// Dashboard
 		r.Get("/api/dashboard/metrics", dashboardHandler.GetMetrics)
 		r.Get("/api/dashboard/expiring", dashboardHandler.GetExpiryAlerts)
 		r.Get("/api/dashboard/company-summary", dashboardHandler.GetCompanySummary)
 		r.Get("/api/dashboard/compliance", dashboardHandler.GetComplianceStats)
 
-		// Notifications (user-scoped, all authenticated users)
+		// Notifications (user-scoped)
 		r.Get("/api/notifications", notificationHandler.List)
 		r.Get("/api/notifications/count", notificationHandler.UnreadCount)
 		r.Patch("/api/notifications/read-all", notificationHandler.MarkAllRead)
 		r.Patch("/api/notifications/{id}/read", notificationHandler.MarkRead)
 
-		// Activity log (read-only)
+		// Activity log
 		r.Get("/api/activity", activityHandler.List)
 
-		// Companies — list and detail are read-only for all roles
+		// Companies (read)
 		r.Get("/api/companies", companyHandler.List)
 		r.Get("/api/companies/{id}", companyHandler.GetByID)
 
-		// Read-only employee & document endpoints — accessible to viewers
+		// Employees (read)
 		r.Get("/api/employees", employeeHandler.List)
 		r.Get("/api/employees/export", employeeHandler.Export)
 		r.Route("/api/employees/{id}", func(r chi.Router) {
@@ -153,32 +152,27 @@ func main() {
 			r.Get("/salary", salaryHandler.ListByEmployee)
 		})
 
-		// Read-only salary & document endpoints — accessible to viewers
+		// Salary & documents (read)
 		r.Get("/api/salary", salaryHandler.List)
 		r.Get("/api/salary/summary", salaryHandler.Summary)
 		r.Get("/api/salary/export", salaryHandler.Export)
 		r.Get("/api/documents/{id}", documentHandler.GetByID)
 
-		// Document types — read access for all authenticated users (needed for forms)
+		// Document types (read — needed for forms)
 		r.Get("/api/document-types", adminHandler.ListDocumentTypes)
 
-		// Write operations restricted to admin role
+		// ── Writer endpoints (company_owner + admin + super_admin) ──────
 		r.Group(func(r chi.Router) {
-			r.Use(middleware.RequireMinRole("admin"))
+			r.Use(middleware.RequireMinRole("company_owner"))
 
-			// Company write operations
-			r.Post("/api/companies", companyHandler.Create)
-			r.Put("/api/companies/{id}", companyHandler.Update)
-			r.Delete("/api/companies/{id}", companyHandler.Delete)
-
-			// Employee write operations
+			// Employee write (scoped via handler checks)
 			r.Post("/api/employees", employeeHandler.Create)
 			r.Put("/api/employees/{id}", employeeHandler.Update)
 			r.Delete("/api/employees/{id}", employeeHandler.Delete)
 			r.Post("/api/employees/batch-delete", employeeHandler.BatchDelete)
 			r.Patch("/api/employees/{id}/exit", employeeHandler.Exit)
 
-			// Document write operations (nested under employee for create)
+			// Document write
 			r.Post("/api/employees/{employeeId}/documents", documentHandler.Create)
 			r.Post("/api/documents/batch-delete", documentHandler.BatchDelete)
 			r.Route("/api/documents/{id}", func(r chi.Router) {
@@ -188,17 +182,29 @@ func main() {
 				r.Post("/renew", documentHandler.Renew)
 			})
 
-			// Salary write operations
+			// Salary write
 			r.Post("/api/salary/generate", salaryHandler.Generate)
 			r.Patch("/api/salary/bulk-status", salaryHandler.BulkUpdateStatus)
 			r.Patch("/api/salary/{id}/status", salaryHandler.UpdateStatus)
+		})
 
-			// User management (admin-only)
+		// ── Admin endpoints (admin + super_admin) ──────────────────────
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.RequireMinRole("admin"))
+
+			// Company write (admin-only)
+			r.Post("/api/companies", companyHandler.Create)
+			r.Put("/api/companies/{id}", companyHandler.Update)
+			r.Delete("/api/companies/{id}", companyHandler.Delete)
+
+			// User management
 			r.Get("/api/users", userMgmtHandler.List)
 			r.Put("/api/users/{id}/role", userMgmtHandler.UpdateRole)
 			r.Delete("/api/users/{id}", userMgmtHandler.Delete)
+			r.Get("/api/users/{id}/companies", userMgmtHandler.GetUserCompanies)
+			r.Put("/api/users/{id}/companies", userMgmtHandler.SetUserCompanies)
 
-			// Admin settings: document types (write operations)
+			// Admin settings: document types
 			r.Post("/api/admin/document-types", adminHandler.CreateDocumentType)
 			r.Put("/api/admin/document-types/{id}", adminHandler.UpdateDocumentType)
 			r.Delete("/api/admin/document-types/{id}", adminHandler.DeleteDocumentType)
@@ -206,6 +212,12 @@ func main() {
 			// Admin settings: compliance rules
 			r.Get("/api/admin/compliance-rules", adminHandler.ListComplianceRules)
 			r.Put("/api/admin/compliance-rules", adminHandler.UpsertComplianceRules)
+
+			// Admin settings: document dependencies
+			r.Get("/api/admin/dependencies", adminHandler.ListDependencies)
+			r.Post("/api/admin/dependencies", adminHandler.CreateDependency)
+			r.Put("/api/admin/dependencies/{id}", adminHandler.UpdateDependency)
+			r.Delete("/api/admin/dependencies/{id}", adminHandler.DeleteDependency)
 		})
 	})
 

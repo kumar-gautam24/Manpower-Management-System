@@ -93,7 +93,7 @@ export default function EmployeesPage() {
     const [companies, setCompanies] = useState<Company[]>([]);
     const [loading, setLoading] = useState(true);
     const [exporting, setExporting] = useState(false);
-    const { isAdmin } = useUser();
+    const { canWrite } = useUser();
 
     // Pagination
     const [page, setPage] = useState(1);
@@ -243,7 +243,7 @@ export default function EmployeesPage() {
                         {exporting ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Download className="h-4 w-4 mr-1" />}
                         Export CSV
                     </Button>
-                    {isAdmin && (
+                    {canWrite && (
                         <Link href="/employees/new">
                             <Button size="sm" className="gap-1"><Plus className="h-4 w-4" /> Add Employee</Button>
                         </Link>
@@ -252,7 +252,7 @@ export default function EmployeesPage() {
             </div>
 
             {/* Selection toolbar */}
-            {isAdmin && selected.size > 0 && (
+            {canWrite && selected.size > 0 && (
                 <div className="flex items-center gap-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 rounded-lg px-4 py-2.5">
                     <button
                         onClick={toggleSelectAll}
@@ -381,7 +381,7 @@ export default function EmployeesPage() {
                                         <div className="flex items-center justify-between gap-4">
                                             <div className="flex items-center gap-4 flex-1 min-w-0">
                                                 {/* Checkbox (admin only) */}
-                                                {isAdmin && (
+                                                {canWrite && (
                                                     <button
                                                         onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleSelect(emp.id); }}
                                                         className={`h-4.5 w-4.5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors cursor-pointer
@@ -397,10 +397,16 @@ export default function EmployeesPage() {
                                                 )}
 
                                                 {/* Avatar */}
-                                                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-100 to-indigo-100 dark:from-blue-950 dark:to-indigo-950 flex items-center justify-center flex-shrink-0">
-                                                    <span className="text-blue-700 dark:text-blue-300 font-bold text-sm">
-                                                        {emp.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
-                                                    </span>
+                                                <div className="w-10 h-10 rounded-full overflow-hidden flex-shrink-0">
+                                                    {emp.photoUrl ? (
+                                                        <img src={emp.photoUrl} alt={emp.name} className="w-full h-full object-cover" />
+                                                    ) : (
+                                                        <div className="w-full h-full bg-gradient-to-br from-blue-100 to-indigo-100 dark:from-blue-950 dark:to-indigo-950 flex items-center justify-center">
+                                                            <span className="text-blue-700 dark:text-blue-300 font-bold text-sm">
+                                                                {emp.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
+                                                            </span>
+                                                        </div>
+                                                    )}
                                                 </div>
 
                                                 {/* Name + meta */}

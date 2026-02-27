@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -26,14 +27,20 @@ func NewCompanyHandler(db database.Service) *CompanyHandler {
 
 // ── List ───────────────────────────────────────────────────────
 
-// List returns all companies, ordered alphabetically.
+// List returns companies the user has access to, ordered alphabetically.
 func (h *CompanyHandler) List(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	pool := h.db.GetPool()
 
-	rows, err := pool.Query(ctx, `
+	where := "WHERE 1=1"
+	args := []interface{}{}
+	argIdx := 1
+	where, args, argIdx = appendCompanyScope(ctx, where, args, argIdx, "c.id")
+	_ = argIdx
+
+	rows, err := pool.Query(ctx, fmt.Sprintf(`
 		SELECT c.id, c.name, COALESCE(c.currency, 'AED'),
 			c.trade_license_number, c.establishment_card_number,
 			c.mohre_category, c.regulatory_authority,
@@ -41,12 +48,13 @@ func (h *CompanyHandler) List(w http.ResponseWriter, r *http.Request) {
 			COUNT(e.id) AS employee_count
 		FROM companies c
 		LEFT JOIN employees e ON e.company_id = c.id
+		%s
 		GROUP BY c.id, c.name, c.currency,
 			c.trade_license_number, c.establishment_card_number,
 			c.mohre_category, c.regulatory_authority,
 			c.created_at, c.updated_at
 		ORDER BY c.name ASC
-	`)
+	`, where), args...)
 	if err != nil {
 		log.Printf("Error fetching companies: %v", err)
 		JSONError(w, http.StatusInternalServerError, "Failed to fetch companies")
@@ -87,6 +95,11 @@ func (h *CompanyHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		JSONError(w, http.StatusBadRequest, "Company ID is required")
+		return
+	}
+
+	if !checkCompanyAccess(r.Context(), id) {
+		JSONError(w, http.StatusForbidden, "Access denied to this company")
 		return
 	}
 

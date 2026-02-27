@@ -42,11 +42,11 @@ func runCycle(db database.Service) {
 	rows, err := pool.Query(ctx, `
 		SELECT
 			d.id, d.employee_id, d.document_type, d.expiry_date,
-			COALESCE(cr.grace_period_days, gr.grace_period_days, d.grace_period_days) AS grace_period_days,
-			COALESCE(cr.fine_per_day, gr.fine_per_day, d.fine_per_day) AS fine_per_day,
+			COALESCE(cr.grace_period_days, gr.grace_period_days, 0) AS grace_period_days,
+			COALESCE(cr.fine_per_day, gr.fine_per_day, 0) AS fine_per_day,
 			d.document_number,
-			COALESCE(cr.fine_type, gr.fine_type, d.fine_type) AS fine_type,
-			COALESCE(cr.fine_cap, gr.fine_cap, d.fine_cap) AS fine_cap,
+			COALESCE(cr.fine_type, gr.fine_type, 'daily') AS fine_type,
+			COALESCE(cr.fine_cap, gr.fine_cap, 0) AS fine_cap,
 			e.name AS employee_name,
 			c.name AS company_name,
 			u.id   AS user_id

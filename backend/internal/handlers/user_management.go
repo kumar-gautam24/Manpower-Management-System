@@ -23,18 +23,25 @@ func NewUserManagementHandler(db database.Service) *UserManagementHandler {
 	return &UserManagementHandler{db: db}
 }
 
-// List returns all users (admin-only).
+// List returns users visible to the current admin.
+// admin sees everyone except super_admin/admin; super_admin sees all.
 func (h *UserManagementHandler) List(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	pool := h.db.GetPool()
+	currentRole, _ := r.Context().Value(ctxkeys.UserRole).(string)
 
-	rows, err := pool.Query(ctx, `
+	query := `
 		SELECT id, email, name, role, created_at::text, updated_at::text
 		FROM users
-		ORDER BY created_at DESC
-	`)
+	`
+	if currentRole != "super_admin" {
+		query += ` WHERE role NOT IN ('super_admin', 'admin')`
+	}
+	query += ` ORDER BY created_at DESC`
+
+	rows, err := pool.Query(ctx, query)
 	if err != nil {
 		log.Printf("Failed to list users: %v", err)
 		JSONError(w, http.StatusInternalServerError, "Failed to fetch users")
@@ -59,10 +66,11 @@ func (h *UserManagementHandler) List(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, map[string]interface{}{"data": users})
 }
 
-// UpdateRole changes a user's role (admin-only). Cannot change your own role.
+// UpdateRole changes a user's role with hierarchical restrictions.
 func (h *UserManagementHandler) UpdateRole(w http.ResponseWriter, r *http.Request) {
 	targetID := chi.URLParam(r, "id")
 	currentUserID, _ := r.Context().Value(ctxkeys.UserID).(string)
+	currentRole, _ := r.Context().Value(ctxkeys.UserRole).(string)
 
 	if targetID == currentUserID {
 		JSONError(w, http.StatusBadRequest, "Cannot change your own role")
@@ -81,6 +89,21 @@ func (h *UserManagementHandler) UpdateRole(w http.ResponseWriter, r *http.Reques
 			"details": errs,
 		})
 		return
+	}
+
+	// Admin can only assign company_owner or viewer
+	if currentRole != "super_admin" {
+		if req.Role == "admin" || req.Role == "super_admin" {
+			JSONError(w, http.StatusForbidden, "Only super_admin can assign admin or super_admin roles")
+			return
+		}
+		// Admin cannot change roles of admin/super_admin users
+		var targetRole string
+		h.db.GetPool().QueryRow(r.Context(), "SELECT role FROM users WHERE id = $1", targetID).Scan(&targetRole)
+		if targetRole == "admin" || targetRole == "super_admin" {
+			JSONError(w, http.StatusForbidden, "Cannot modify admin or super_admin users")
+			return
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -112,10 +135,11 @@ func (h *UserManagementHandler) UpdateRole(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// Delete removes a user (admin-only). Cannot delete yourself.
+// Delete removes a user with hierarchical restrictions.
 func (h *UserManagementHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	targetID := chi.URLParam(r, "id")
 	currentUserID, _ := r.Context().Value(ctxkeys.UserID).(string)
+	currentRole, _ := r.Context().Value(ctxkeys.UserRole).(string)
 
 	if targetID == currentUserID {
 		JSONError(w, http.StatusBadRequest, "Cannot delete your own account")
@@ -127,11 +151,16 @@ func (h *UserManagementHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	pool := h.db.GetPool()
 
-	// Get user info for audit log before deleting
-	var email string
-	err := pool.QueryRow(ctx, `SELECT email FROM users WHERE id = $1`, targetID).Scan(&email)
+	var email, targetRole string
+	err := pool.QueryRow(ctx, `SELECT email, role FROM users WHERE id = $1`, targetID).Scan(&email, &targetRole)
 	if err != nil {
 		JSONError(w, http.StatusNotFound, "User not found")
+		return
+	}
+
+	// Admin cannot delete admin/super_admin
+	if currentRole != "super_admin" && (targetRole == "admin" || targetRole == "super_admin") {
+		JSONError(w, http.StatusForbidden, "Cannot delete admin or super_admin users")
 		return
 	}
 
@@ -152,4 +181,102 @@ func (h *UserManagementHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	})
 
 	JSON(w, http.StatusOK, map[string]interface{}{"message": "User deleted successfully"})
+}
+
+// ── Company Assignment ─────────────────────────────────────────
+
+// GetUserCompanies returns the company IDs assigned to a user.
+func (h *UserManagementHandler) GetUserCompanies(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "id")
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	pool := h.db.GetPool()
+
+	rows, err := pool.Query(ctx, `
+		SELECT uc.company_id::text, c.name
+		FROM user_companies uc
+		JOIN companies c ON c.id = uc.company_id
+		WHERE uc.user_id = $1
+		ORDER BY c.name ASC
+	`, userID)
+	if err != nil {
+		log.Printf("Failed to get user companies: %v", err)
+		JSONError(w, http.StatusInternalServerError, "Failed to fetch company assignments")
+		return
+	}
+	defer rows.Close()
+
+	type Assignment struct {
+		CompanyID   string `json:"companyId"`
+		CompanyName string `json:"companyName"`
+	}
+	assignments := []Assignment{}
+	for rows.Next() {
+		var a Assignment
+		if err := rows.Scan(&a.CompanyID, &a.CompanyName); err != nil {
+			continue
+		}
+		assignments = append(assignments, a)
+	}
+
+	JSON(w, http.StatusOK, map[string]interface{}{"data": assignments})
+}
+
+// SetUserCompanies replaces all company assignments for a user.
+func (h *UserManagementHandler) SetUserCompanies(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "id")
+
+	var req struct {
+		CompanyIDs []string `json:"companyIds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		JSONError(w, http.StatusBadRequest, "Invalid JSON body")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	pool := h.db.GetPool()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		JSONError(w, http.StatusInternalServerError, "Failed to update assignments")
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `DELETE FROM user_companies WHERE user_id = $1`, userID)
+	if err != nil {
+		log.Printf("Failed to clear user companies: %v", err)
+		JSONError(w, http.StatusInternalServerError, "Failed to update assignments")
+		return
+	}
+
+	for _, companyID := range req.CompanyIDs {
+		_, err = tx.Exec(ctx,
+			`INSERT INTO user_companies (user_id, company_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+			userID, companyID,
+		)
+		if err != nil {
+			log.Printf("Failed to assign company %s to user %s: %v", companyID, userID, err)
+			continue
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		JSONError(w, http.StatusInternalServerError, "Failed to update assignments")
+		return
+	}
+
+	currentUserID, _ := r.Context().Value(ctxkeys.UserID).(string)
+	go logActivity(pool, currentUserID, "assigned_companies", "user", userID, map[string]interface{}{
+		"companyIds": req.CompanyIDs,
+	})
+
+	JSON(w, http.StatusOK, map[string]interface{}{
+		"message": "Company assignments updated",
+	})
 }

@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useUser } from '@/hooks/use-user';
 import { api } from '@/lib/api';
-import type { Company, ComplianceRuleRow, AdminDocumentType } from '@/types';
+import type { Company, ComplianceRuleRow, AdminDocumentType, DocumentDependency } from '@/types';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -37,7 +37,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Save, Plus, Pencil, Trash2, Info } from 'lucide-react';
 import { toast } from 'sonner';
 
-type Tab = 'rules' | 'types';
+type Tab = 'rules' | 'types' | 'dependencies';
 
 export default function SettingsPage() {
     const { isAdmin, loading: authLoading } = useUser();
@@ -91,10 +91,21 @@ export default function SettingsPage() {
                 >
                     Document Types
                 </button>
+                <button
+                    onClick={() => setActiveTab('dependencies')}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                        activeTab === 'dependencies'
+                            ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+                            : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                >
+                    Dependencies
+                </button>
             </div>
 
             {activeTab === 'rules' && <ComplianceRulesTab />}
             {activeTab === 'types' && <DocumentTypesTab />}
+            {activeTab === 'dependencies' && <DependenciesTab />}
         </div>
     );
 }
@@ -682,5 +693,207 @@ function DocumentTypeForm({
                 {saving ? 'Saving...' : isEditing ? 'Update' : 'Create'}
             </Button>
         </form>
+    );
+}
+
+// ── Dependencies Tab ─────────────────────────────────────────
+
+function DependenciesTab() {
+    const [dependencies, setDependencies] = useState<DocumentDependency[]>([]);
+    const [docTypes, setDocTypes] = useState<AdminDocumentType[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [dialogOpen, setDialogOpen] = useState(false);
+    const [editing, setEditing] = useState<DocumentDependency | null>(null);
+
+    const [form, setForm] = useState({ blockingDocType: '', blockedDocType: '', description: '' });
+
+    const fetchData = useCallback(async () => {
+        try {
+            const [depsRes, typesRes] = await Promise.all([
+                api.dependencies.list(),
+                api.documentTypes.list(),
+            ]);
+            setDependencies(depsRes.data || []);
+            setDocTypes(typesRes.data || []);
+        } catch {
+            toast.error('Failed to fetch dependency data');
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => { fetchData(); }, [fetchData]);
+
+    const docTypeName = (slug: string) =>
+        docTypes.find(dt => dt.docType === slug)?.displayName || slug.replace(/_/g, ' ');
+
+    const openAdd = () => {
+        setEditing(null);
+        setForm({ blockingDocType: '', blockedDocType: '', description: '' });
+        setDialogOpen(true);
+    };
+
+    const openEdit = (dep: DocumentDependency) => {
+        setEditing(dep);
+        setForm({
+            blockingDocType: dep.blockingDocType,
+            blockedDocType: dep.blockedDocType,
+            description: dep.description,
+        });
+        setDialogOpen(true);
+    };
+
+    const handleSave = async () => {
+        if (!form.blockingDocType || !form.blockedDocType || !form.description) {
+            toast.error('All fields are required');
+            return;
+        }
+        try {
+            if (editing) {
+                const res = await api.dependencies.update(editing.id, form);
+                setDependencies(prev => prev.map(d => d.id === editing.id ? res.data : d));
+                toast.success('Dependency updated');
+            } else {
+                const res = await api.dependencies.create(form);
+                setDependencies(prev => [...prev, res.data]);
+                toast.success('Dependency created');
+            }
+            setDialogOpen(false);
+        } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : 'Failed to save';
+            toast.error(message);
+        }
+    };
+
+    const handleDelete = async (id: string) => {
+        try {
+            await api.dependencies.delete(id);
+            setDependencies(prev => prev.filter(d => d.id !== id));
+            toast.success('Dependency deleted');
+        } catch {
+            toast.error('Failed to delete dependency');
+        }
+    };
+
+    if (loading) {
+        return (
+            <div className="flex items-center justify-center py-20">
+                <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+            </div>
+        );
+    }
+
+    return (
+        <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                    <CardTitle className="text-lg">Document Dependencies</CardTitle>
+                    <CardDescription>
+                        Define which document types block the renewal of others.
+                    </CardDescription>
+                </div>
+                <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+                    <DialogTrigger asChild>
+                        <Button size="sm" onClick={openAdd}><Plus className="h-4 w-4 mr-1" /> Add Rule</Button>
+                    </DialogTrigger>
+                    <DialogContent className="max-w-md">
+                        <DialogHeader>
+                            <DialogTitle>{editing ? 'Edit Dependency' : 'Add Dependency'}</DialogTitle>
+                        </DialogHeader>
+                        <div className="space-y-4 pt-2">
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">Blocking Document</label>
+                                <Select value={form.blockingDocType} onValueChange={v => setForm(f => ({ ...f, blockingDocType: v }))}>
+                                    <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+                                    <SelectContent>
+                                        {docTypes.map(dt => (
+                                            <SelectItem key={dt.docType} value={dt.docType}>{dt.displayName}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div className="text-center text-sm text-muted-foreground">blocks renewal of</div>
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">Blocked Document</label>
+                                <Select value={form.blockedDocType} onValueChange={v => setForm(f => ({ ...f, blockedDocType: v }))}>
+                                    <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+                                    <SelectContent>
+                                        {docTypes.filter(dt => dt.docType !== form.blockingDocType).map(dt => (
+                                            <SelectItem key={dt.docType} value={dt.docType}>{dt.displayName}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">Description</label>
+                                <Input
+                                    value={form.description}
+                                    onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                                    placeholder="e.g. Passport must have 6+ months validity to renew Visa"
+                                />
+                            </div>
+                            <div className="flex justify-end gap-2 pt-2">
+                                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+                                <Button onClick={handleSave}>
+                                    <Save className="h-4 w-4 mr-1" /> {editing ? 'Update' : 'Create'}
+                                </Button>
+                            </div>
+                        </div>
+                    </DialogContent>
+                </Dialog>
+            </CardHeader>
+            <CardContent>
+                {dependencies.length === 0 ? (
+                    <div className="text-center py-10 text-muted-foreground">
+                        No dependency rules defined yet.
+                    </div>
+                ) : (
+                    <div className="space-y-3">
+                        {dependencies.map(dep => (
+                            <div key={dep.id} className="flex items-center justify-between p-4 rounded-lg border border-border bg-accent/20">
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                                        <span className="px-2 py-0.5 rounded bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-xs">
+                                            {docTypeName(dep.blockingDocType)}
+                                        </span>
+                                        <span className="text-muted-foreground">blocks</span>
+                                        <span className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 text-xs">
+                                            {docTypeName(dep.blockedDocType)}
+                                        </span>
+                                    </div>
+                                    <p className="text-xs text-muted-foreground mt-1">{dep.description}</p>
+                                </div>
+                                <div className="flex items-center gap-1 ml-4">
+                                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(dep)}>
+                                        <Pencil className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <AlertDialog>
+                                        <AlertDialogTrigger asChild>
+                                            <Button variant="ghost" size="icon" className="h-8 w-8 text-red-500 hover:text-red-600">
+                                                <Trash2 className="h-3.5 w-3.5" />
+                                            </Button>
+                                        </AlertDialogTrigger>
+                                        <AlertDialogContent>
+                                            <AlertDialogHeader>
+                                                <AlertDialogTitle>Delete Dependency Rule</AlertDialogTitle>
+                                                <AlertDialogDescription>
+                                                    Remove this dependency rule? Existing documents won&apos;t be affected.
+                                                </AlertDialogDescription>
+                                            </AlertDialogHeader>
+                                            <AlertDialogFooter>
+                                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                                <AlertDialogAction onClick={() => handleDelete(dep.id)} className="bg-red-600 hover:bg-red-700">
+                                                    Delete
+                                                </AlertDialogAction>
+                                            </AlertDialogFooter>
+                                        </AlertDialogContent>
+                                    </AlertDialog>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </CardContent>
+        </Card>
     );
 }

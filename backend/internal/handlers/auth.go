@@ -158,7 +158,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetMe returns the profile of the currently authenticated user.
-// Requires the auth middleware to have set the user ID in the request context.
+// For scoped users (company_owner, viewer), includes their assigned company IDs.
 func (h *AuthHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	userID, _ := r.Context().Value(ctxkeys.UserID).(string)
 
@@ -181,7 +181,31 @@ func (h *AuthHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	JSON(w, http.StatusOK, user)
+	type MeResponse struct {
+		models.User
+		CompanyIDs []string `json:"companyIds,omitempty"`
+	}
+
+	resp := MeResponse{User: user}
+
+	if user.Role == "company_owner" || user.Role == "viewer" {
+		rows, err := pool.Query(ctx,
+			`SELECT company_id::text FROM user_companies WHERE user_id = $1`, userID)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var id string
+				if rows.Scan(&id) == nil {
+					resp.CompanyIDs = append(resp.CompanyIDs, id)
+				}
+			}
+		}
+		if resp.CompanyIDs == nil {
+			resp.CompanyIDs = []string{}
+		}
+	}
+
+	JSON(w, http.StatusOK, resp)
 }
 
 // generateToken creates a signed JWT with user ID and role as claims.
