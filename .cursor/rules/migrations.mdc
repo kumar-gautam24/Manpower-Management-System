@@ -1,0 +1,18 @@
+---
+description: "Database migrations — naming, location, next number, running. Use when adding or changing migrations."
+globs: "backend/migrations/**"
+alwaysApply: false
+---
+
+# Migrations
+
+- **Location:** `backend/migrations/`. One file per migration: `NNN_snake_case_description.sql` (e.g. `010_drop_deprecated_doc_cols.sql`).
+- **Next number:** **Do not hardcode.** Determine the next index by:
+  - Listing `backend/migrations/*.sql` and taking the highest number, or
+  - Reading [CURRENT_STATUS.md](CURRENT_STATUS.md) “Latest migration” (e.g. 010 → next is 011).
+  Then create `011_short_description.sql` (or 012, 013, … as the project progresses).
+- **Content:** Plain SQL (DDL/DML). No down migrations in this project; migrations are forward-only. Avoid destructive changes without backup; prefer additive changes.
+- **Run:** From repo root or backend dir: `migrate -path backend/migrations -database "$DB_URL" up` (or `make migrate-up` in backend if Makefile exists). Use same DB URL as app (Neon: DATABASE_URL or DB_*).
+- **After adding a migration:** Append to [CURRENT_STATUS.md](CURRENT_STATUS.md): date, “Added migration 011_short_name”, and set “Latest migration” to the new filename. Run migrations before committing.
+
+Schema and table list: [PROJECT_ANALYSIS.md](PROJECT_ANALYSIS.md) section 5.

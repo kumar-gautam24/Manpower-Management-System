@@ -1,0 +1,14 @@
+---
+description: "Next.js frontend — App Router, React Query, shadcn, forms. Use when editing frontend or UI."
+globs: "frontend/**"
+alwaysApply: false
+---
+
+# Frontend (Next.js)
+
+- **App Router:** `frontend/src/app/` — layout, dashboard (page.tsx), login, register, employees (list, new, [id], [id]/edit), companies, salary, activity, users, settings.
+- **API client:** `frontend/src/lib/api.ts` — base URL from `NEXT_PUBLIC_API_URL`, Bearer token from localStorage, fetcher and typed endpoints.
+- **Components and types:** `frontend/src/components/`, `frontend/src/types/` — use existing patterns (React Query, React Hook Form + Zod, shadcn/ui).
+- **Build:** `frontend/package.json` — `next dev`, `next build`, `next start`.
+
+Routes, features, and API usage are documented in [PROJECT_ANALYSIS.md](PROJECT_ANALYSIS.md) (sections 3, 4, 7). Keep API calls aligned with backend routes in `backend/cmd/api/main.go`. CONTEXT/ is legacy; prefer PROJECT_ANALYSIS and existing frontend code.

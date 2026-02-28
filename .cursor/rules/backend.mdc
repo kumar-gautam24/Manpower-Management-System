@@ -1,0 +1,19 @@
+---
+description: "Go backend — Chi router, handlers, models, config, storage (R2/local), migrations. Use when editing backend code or API."
+globs: "backend/**"
+alwaysApply: false
+---
+
+# Backend (Go)
+
+- **Entry and routes:** [backend/cmd/api/main.go](backend/cmd/api/main.go) — router, middleware (Auth, RateLimit, InjectCompanyScope, RequireMinRole), handler wiring.
+- **Handlers:** `backend/internal/handlers/` — auth, dashboard, employee, document, company, upload, salary, activity, notification, admin, user_management. Use existing patterns; return JSON via response helpers.
+- **Models:** `backend/internal/models/` — structs for DB rows and API payloads.
+- **Config:** `backend/internal/config/config.go` — env (Port, DB, JWTSecret, Upload). DB can use DB_* vars or DATABASE_URL (production often uses DATABASE_URL; config currently uses DB_*).
+- **Database:** `backend/internal/database/` — pgxpool, health. No ORM; raw SQL in handlers or shared helpers.
+- **Storage:** `backend/internal/storage/` — `Store` interface (Save, Delete, URL); `local.go` and `r2.go` implementations. Production uses R2.
+- **Compliance:** `backend/internal/compliance/` — document status, grace, fines.
+- **Cron:** `backend/internal/cron/notifier.go` — daily expiry/notification job.
+- **Migrations:** `backend/migrations/` — numbered `NNN_name.sql`. See [.cursor/rules/migrations.mdc](.cursor/rules/migrations.mdc) for naming and next number.
+
+For API surface, schema, and auth/roles, use [PROJECT_ANALYSIS.md](PROJECT_ANALYSIS.md) (sections 5, 6, 8). CONTEXT/DEVELOPMENT_GUIDELINES.md is legacy; prefer PROJECT_ANALYSIS and existing backend code as reference.

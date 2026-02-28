@@ -1,0 +1,31 @@
+---
+description: "Manpower Management System — project identity, where to read state, and when to update CURRENT_STATUS. Apply to every chat."
+alwaysApply: true
+---
+
+# Project context
+
+This codebase is the **Manpower Management System**: full-stack UAE document compliance (employees, companies, mandatory documents, expiry, grace, fines). Next.js 16 on Vercel, Go/Chi on Render, PostgreSQL on Neon, files on Cloudflare R2.
+
+## Where to read
+
+- **Current state:** [CURRENT_STATUS.md](CURRENT_STATUS.md) — deploy state, **latest migration number**, recent changes. Read this first so you know what is live and what changed.
+- **Full reference:** [PROJECT_ANALYSIS.md](PROJECT_ANALYSIS.md) — architecture, schema, API, modules, flows.
+- **Short brief:** [CONTEXT/APP_CONTEXT.md](CONTEXT/APP_CONTEXT.md) — stack, paths, env (for low-token context).
+
+The `CONTEXT/` folder (DEVELOPMENT_GUIDELINES.md, core_req.md, etc.) is **legacy**; it may still be useful but can be outdated. Prefer PROJECT_ANALYSIS.md and CURRENT_STATUS.md for current behavior.
+
+## When to update CURRENT_STATUS.md
+
+Append a short entry (1–3 lines) when you:
+
+- Add or change a **migration** (include the new migration filename and update the “Latest migration” line).
+- Change **deploy config** or env (e.g. new service, new env var).
+- Ship a **feature or significant change** worth recording for the next session.
+
+Do not remove old entries; keep the file as an append-only log. Optionally trim very old entries if the file grows large (e.g. keep last 30).
+
+## Paths
+
+- Backend: `backend/cmd/api/main.go`, `backend/internal/handlers/`, `backend/internal/models/`, `backend/migrations/`.
+- Frontend: `frontend/src/app/`, `frontend/src/lib/api.ts`, `frontend/src/components/`.
